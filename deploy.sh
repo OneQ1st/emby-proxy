@@ -7,7 +7,7 @@ YELLOW='\033[1;33m'
 NC='\033[0m'
 
 echo -e "\033[0;32m====================================================\033[0m"
-echo -e "\033[0;36m    Emby-Proxy + Caddy 部署脚本 (证书整合版)    \033[0m"
+echo -e "\033[0;36m    Emby-Proxy + Caddy 部署脚本 (架构自适应终极版)    \033[0m"
 echo -e "\033[0;32m====================================================\033[0m"
 
 # 1. 基础依赖与环境
@@ -21,11 +21,40 @@ apt install -y curl socat net-tools tar wget git ca-certificates psmisc || {
 }
 
 mkdir -p /opt/emby-proxy/ssl
+cd /opt/emby-proxy || exit 1
 
-# 2. 自动赋权
-echo -e "\033[0;33m>>> 正在给上传的文件赋权...\033[0m"
-chmod +x /opt/emby-proxy/emby-proxy 2>/dev/null || true
-chmod +x /opt/emby-proxy/caddy 2>/dev/null || true
+# 2. 架构自动检测与对应文件下载
+ARCH=$(uname -m)
+CADDY_VER="2.7.6" # 指定一个稳定的 Caddy 版本
+
+echo -e "\033[0;33m>>> 检测到系统架构为: $ARCH\033[0m"
+
+if [ "$ARCH" = "x86_64" ]; then
+    # 使用 raw.githubusercontent.com 防止 wget 下载到网页代码
+    EMBY_PROXY_URL="https://raw.githubusercontent.com/OneQ1st/emby-proxy/main/emby-proxy-amd64"
+    CADDY_URL="https://github.com/caddyserver/caddy/releases/download/v${CADDY_VER}/caddy_${CADDY_VER}_linux_amd64.tar.gz"
+elif [ "$ARCH" = "aarch64" ]; then
+    EMBY_PROXY_URL="https://raw.githubusercontent.com/OneQ1st/emby-proxy/main/emby-proxy-arm64"
+    CADDY_URL="https://github.com/caddyserver/caddy/releases/download/v${CADDY_VER}/caddy_${CADDY_VER}_linux_arm64.tar.gz"
+else
+    echo -e "\033[0;31m暂不支持当前架构: $ARCH，请手动编译或获取对应二进制文件！\033[0m"
+    exit 1
+fi
+
+echo -e "\033[0;33m>>> 正在从 GitHub 下载对应的 emby-proxy...\033[0m"
+rm -f emby-proxy
+wget -O emby-proxy "$EMBY_PROXY_URL"
+chmod +x emby-proxy
+
+echo -e "\033[0;33m>>> 正在从官方 GitHub 下载 Caddy...\033[0m"
+rm -f caddy caddy.tar.gz
+wget -O caddy.tar.gz "$CADDY_URL"
+tar -zxvf caddy.tar.gz caddy
+rm -f caddy.tar.gz
+chmod +x caddy
+
+# 快速校验下载的二进制文件是否可运行
+./caddy version >/dev/null 2>&1 || { echo -e "${RED}[错误] Caddy 运行失败，请检查网络或系统兼容性${NC}"; exit 1; }
 
 # 3. 安装/升级 acme.sh
 ACME_DIR="$HOME/.acme.sh"
@@ -42,7 +71,7 @@ if [ ! -f "$ACME_BIN" ] || [ ! -x "$ACME_BIN" ]; then
     
     cd /tmp/acme.sh || exit 1
     ./acme.sh --install --nocron
-    cd /root || exit 1
+    cd /opt/emby-proxy || exit 1
     rm -rf /tmp/acme.sh
     echo -e "\033[0;32m>>> acme.sh 安装完成\033[0m"
 fi
@@ -61,15 +90,15 @@ echo -e "1) Cloudflare DNS (推荐)"
 echo -e "2) HTTP Standalone（推荐，如果 80 端口可用）"
 read -p "选择 [1/2]: " AUTH_MODE
 
-# === 证书检测部分（最终稳定版）===
+# === 证书检测部分 ===
 CERT_FILE="/opt/emby-proxy/ssl/fullchain.pem"
 KEY_FILE="/opt/emby-proxy/ssl/privkey.pem"
 
 POSSIBLE_CERTS=(
     "$CERT_FILE"
     "/etc/letsencrypt/live/$DOMAIN/fullchain.pem"
-    "\( HOME/.acme.sh/ \){DOMAIN}_ecc/fullchain.cer"
-    "\( HOME/.acme.sh/ \){DOMAIN}/fullchain.cer"
+    "$HOME/.acme.sh/${DOMAIN}_ecc/fullchain.cer"
+    "$HOME/.acme.sh/${DOMAIN}/fullchain.cer"
     "$HOME/$DOMAIN/$DOMAIN.crt"
     "$HOME/$DOMAIN/fullchain.cer"
     "/etc/ssl/$DOMAIN/fullchain.pem"
@@ -79,8 +108,8 @@ POSSIBLE_CERTS=(
 POSSIBLE_KEYS=(
     "$KEY_FILE"
     "/etc/letsencrypt/live/$DOMAIN/privkey.pem"
-    "\( HOME/.acme.sh/ \){DOMAIN}_ecc/$DOMAIN.key"
-    "\( HOME/.acme.sh/ \){DOMAIN}/$DOMAIN.key"
+    "$HOME/.acme.sh/${DOMAIN}_ecc/$DOMAIN.key"
+    "$HOME/.acme.sh/${DOMAIN}/$DOMAIN.key"
     "$HOME/$DOMAIN/$DOMAIN.key"
     "$HOME/$DOMAIN/privkey.key"
     "/etc/ssl/$DOMAIN/privkey.pem"
@@ -96,7 +125,6 @@ for idx in "${!POSSIBLE_CERTS[@]}"; do
     key_path="${POSSIBLE_KEYS[$idx]}"
     
     if [ -s "$cert_path" ] && [ -s "$key_path" ]; then
-        # 简单校验域名是否匹配（避免复杂正则报错）
         if openssl x509 -in "$cert_path" -noout -text 2>/dev/null | grep -q "$DOMAIN"; then
             echo -e "\033[0;32m>>> 发现匹配当前域名($DOMAIN)的证书: $cert_path\033[0m"
             if [ "$cert_path" != "$CERT_FILE" ]; then
@@ -111,12 +139,11 @@ for idx in "${!POSSIBLE_CERTS[@]}"; do
     fi
 done
 
-# 手动提供证书逻辑
+# 手动提供证书逻辑 (已完美恢复)
 if [ "$SKIP_CERT" = false ]; then
     echo -e "\033[0;33m>>> 未检测到匹配域名 $DOMAIN 的有效证书。\033[0m"
     read -p "是否手动提供证书路径？(y/n，默认 n): " PROVIDE_CERT
     
-    # 使用最安全的判断方式
     if [ "$PROVIDE_CERT" = "y" ] || [ "$PROVIDE_CERT" = "Y" ] || [ "$PROVIDE_CERT" = "yes" ]; then
         echo -e "\033[0;36m请输入证书文件完整路径 (fullchain.pem 或 .crt)：\033[0m"
         read -p "证书路径: " USER_CERT
@@ -173,7 +200,7 @@ fi
 # 6. 生成 Caddyfile
 cat <<CADDY_EOF > /opt/emby-proxy/Caddyfile
 {
-    # 避免自动监听80端口
+    # 避免自动监听80端口，防止与Nginx冲突报错
     http_port 40890 
 }
 $DOMAIN:$EX_PORT {
@@ -218,9 +245,6 @@ WantedBy=multi-user.target
 SVC_EOF
 
 # 启动服务
-chmod +x /opt/emby-proxy/emby-proxy 2>/dev/null || true
-chmod +x /opt/emby-proxy/caddy 2>/dev/null || true
-
 systemctl daemon-reload
 systemctl enable --now emby-backend caddy-proxy
 
