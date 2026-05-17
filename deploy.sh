@@ -7,54 +7,56 @@ YELLOW='\033[1;33m'
 NC='\033[0m'
 
 echo -e "\033[0;32m====================================================\033[0m"
-echo -e "\033[0;36m    Emby-Proxy + Caddy 部署脚本 (架构自适应终极版)    \033[0m"
+echo -e "\033[0;36m    Emby-Proxy + Nginx 部署脚本 (架构自适应终极版)    \033[0m"
 echo -e "\033[0;32m====================================================\033[0m"
 
-# 1. 基础依赖与环境
-echo -e "\033[0;33m>>> 正在安装基础依赖...\033[0m"
-apt update -y
+# 1. 基础环境与 Nginx 本地存在性检查及安装
+echo -e "\033[0;33m>>> 正在检查基础环境依赖与 Nginx 状态...\033[0m"
 
-apt install -y curl socat net-tools tar wget git ca-certificates psmisc || {
-    echo -e "\033[0;31m依赖安装失败！请检查网络或手动执行以下命令：\033[0m"
-    echo -e "apt install -y curl socat net-tools tar wget git ca-certificates psmisc"
+# 待安装的基础依赖列表
+INSTALL_PACKAGES="curl socat net-tools tar wget git ca-certificates psmisc"
+
+# 检查 Nginx 是否已存在于系统
+if command -v nginx >/dev/null 2>&1; then
+    echo -e "${GREEN}>>> 检测到本地已安装 Nginx，将跳过 Nginx 核心安装，仅进行依赖补齐与配置更新。${NC}"
+else
+    echo -e "${YELLOW}>>> 未检测到 Nginx，已将其加入安装队列...${NC}"
+    INSTALL_PACKAGES="$INSTALL_PACKAGES nginx"
+fi
+
+apt update -y
+apt install -y $INSTALL_PACKAGES || {
+    echo -e "\033[0;31m依赖或 Nginx 安装失败！请检查网络或手动执行以下命令：\033[0m"
+    echo -e "apt install -y $INSTALL_PACKAGES"
     exit 1
 }
 
+# 移除 Nginx 可能自带的默认冲突站点配置
+if [ -f /etc/nginx/sites-enabled/default ]; then
+    rm -f /etc/nginx/sites-enabled/default
+fi
+
+# 创建项目及 SSL 证书默认目录
 mkdir -p /opt/emby-proxy/ssl
 cd /opt/emby-proxy || exit 1
 
-# 2. 架构自动检测与对应文件下载
+# 2. 架构自动检测与对应后端文件下载
 ARCH=$(uname -m)
-CADDY_VER="2.7.6" # 指定一个稳定的 Caddy 版本
-
 echo -e "\033[0;33m>>> 检测到系统架构为: $ARCH\033[0m"
 
 if [ "$ARCH" = "x86_64" ]; then
-    # 使用 raw.githubusercontent.com 防止 wget 下载到网页代码
     EMBY_PROXY_URL="https://raw.githubusercontent.com/OneQ1st/emby-proxy/main/emby-proxy-amd64"
-    CADDY_URL="https://github.com/caddyserver/caddy/releases/download/v${CADDY_VER}/caddy_${CADDY_VER}_linux_amd64.tar.gz"
 elif [ "$ARCH" = "aarch64" ]; then
     EMBY_PROXY_URL="https://raw.githubusercontent.com/OneQ1st/emby-proxy/main/emby-proxy-arm64"
-    CADDY_URL="https://github.com/caddyserver/caddy/releases/download/v${CADDY_VER}/caddy_${CADDY_VER}_linux_arm64.tar.gz"
 else
     echo -e "\033[0;31m暂不支持当前架构: $ARCH，请手动编译或获取对应二进制文件！\033[0m"
     exit 1
 fi
 
-echo -e "\033[0;33m>>> 正在从 GitHub 下载对应的 emby-proxy...\033[0m"
+echo -e "\033[0;33m>>> 正在从 GitHub 下载对应的 emby-proxy 后端...\033[0m"
 rm -f emby-proxy
 wget -O emby-proxy "$EMBY_PROXY_URL"
 chmod +x emby-proxy
-
-echo -e "\033[0;33m>>> 正在从官方 GitHub 下载 Caddy...\033[0m"
-rm -f caddy caddy.tar.gz
-wget -O caddy.tar.gz "$CADDY_URL"
-tar -zxvf caddy.tar.gz caddy
-rm -f caddy.tar.gz
-chmod +x caddy
-
-# 快速校验下载的二进制文件是否可运行
-./caddy version >/dev/null 2>&1 || { echo -e "${RED}[错误] Caddy 运行失败，请检查网络或系统兼容性${NC}"; exit 1; }
 
 # 3. 安装/升级 acme.sh
 ACME_DIR="$HOME/.acme.sh"
@@ -139,7 +141,7 @@ for idx in "${!POSSIBLE_CERTS[@]}"; do
     fi
 done
 
-# 手动提供证书逻辑 (已完美恢复)
+# 手动提供证书逻辑
 if [ "$SKIP_CERT" = false ]; then
     echo -e "\033[0;33m>>> 未检测到匹配域名 $DOMAIN 的有效证书。\033[0m"
     read -p "是否手动提供证书路径？(y/n，默认 n): " PROVIDE_CERT
@@ -180,14 +182,17 @@ if [ "$SKIP_CERT" = false ]; then
         "$ACME_BIN" --issue --dns dns_cf -d "$DOMAIN" --force --ecc
     else
         echo -e "\033[0;33m>>> 模式: HTTP Standalone\033[0m"
+        # 申请前优雅停止 nginx 以释放 80 端口，双重保险配合 fuser
+        systemctl stop nginx 2>/dev/null || true
         fuser -k 80/tcp 2>/dev/null || true
         "$ACME_BIN" --issue -d "$DOMAIN" --standalone --httpport 80 --force --ecc
     fi
 
+    # 证书申请/续期成功后的回调，保证 nginx 能够重新载入新证书
     "$ACME_BIN" --install-cert -d "$DOMAIN" --ecc \
         --fullchain-file "$CERT_FILE" \
         --key-file "$KEY_FILE" \
-        --reloadcmd "systemctl reload caddy-proxy 2>/dev/null || true"
+        --reloadcmd "systemctl reload nginx 2>/dev/null || systemctl start nginx 2>/dev/null || true"
 
     if [ ! -s "$CERT_FILE" ] || [ ! -s "$KEY_FILE" ]; then
         echo -e "\033[0;31m[错误] 证书申请失败！\033[0m"
@@ -197,23 +202,51 @@ if [ "$SKIP_CERT" = false ]; then
     echo -e "\033[0;32m>>> 证书申请并安装成功！\033[0m"
 fi
 
-# 6. 生成 Caddyfile
-cat <<CADDY_EOF > /opt/emby-proxy/Caddyfile
-{
-    # 避免自动监听80端口，防止与Nginx冲突报错
-    http_port 40890 
-}
-$DOMAIN:$EX_PORT {
-    tls $CERT_FILE $KEY_FILE
-    reverse_proxy 127.0.0.1:8080 {
-        header_up Host {host}
-        header_up X-Real-IP {remote_host}
-        flush_interval -1
+# 5. 生成 Nginx 配置文件
+echo -e "\033[0;33m>>> 正在生成 Nginx 配置文件...\033[0m"
+
+# 根据自定义外部端口动态拼接透传 Header 逻辑
+PORT_HEADER=""
+if [ "$EX_PORT" != "443" ]; then
+    PORT_HEADER="proxy_set_header X-Forwarded-Port \$server_port;"
+fi
+
+cat <<NGINX_EOF > /etc/nginx/conf.d/emby-proxy.conf
+server {
+    listen $EX_PORT ssl;
+    server_name $DOMAIN;
+
+    ssl_certificate $CERT_FILE;
+    ssl_certificate_key $KEY_FILE;
+
+    # SSL 基础安全调优
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host \$http_host;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Forwarded-Host \$http_host;
+
+        # 媒体流特殊优化选项（关闭双向缓冲、限制临时分块临时文件大小，防止流媒体卡顿）
+        proxy_buffering off;
+        proxy_request_buffering off;
+        proxy_max_temp_file_size 0;
+
+        # WebSocket 支持
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        # 非 443 端口自适应透传
+        $PORT_HEADER
     }
 }
-CADDY_EOF
+NGINX_EOF
 
-# 7. Systemd 服务
+# 6. 配置 Emby 后端 Systemd 服务
 cat <<SVC_EOF > /etc/systemd/system/emby-backend.service
 [Unit]
 Description=Emby Proxy Backend
@@ -229,26 +262,25 @@ RestartSec=5
 WantedBy=multi-user.target
 SVC_EOF
 
-cat <<SVC_EOF > /etc/systemd/system/caddy-proxy.service
-[Unit]
-Description=Caddy SSL Frontend
-After=network.target
-
-[Service]
-WorkingDirectory=/opt/emby-proxy
-ExecStart=/opt/emby-proxy/caddy run --config /opt/emby-proxy/Caddyfile --adapter caddyfile
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-SVC_EOF
-
-# 启动服务
+# 7. 启动与重载服务
+echo -e "\033[0;33m>>> 正在启动 Emby 后端并校验 Nginx...\033[0m"
 systemctl daemon-reload
-systemctl enable --now emby-backend caddy-proxy
+systemctl enable --now emby-backend
 
+# 强校验 Nginx 语法
+nginx -t >/dev/null 2>&1
+if [ $? -eq 0 ]; then
+    systemctl enable nginx
+    systemctl restart nginx
+else
+    echo -e "${RED}[错误] Nginx 配置语法校验失败，请检查 /etc/nginx/conf.d/emby-proxy.conf 的合规性！${NC}"
+    exit 1
+fi
+
+echo -e "\033[0;32m====================================================\033[0m"
 echo -e "\033[0;32m部署完成！\033[0m"
 echo -e "访问地址: https://$DOMAIN:$EX_PORT"
 echo -e "万能反代示例: https://$DOMAIN:$EX_PORT/https/目标域名/443/..."
-echo -e "重启命令: systemctl restart emby-backend caddy-proxy"
+echo -e "管理后端命令: systemctl restart/status emby-backend"
+echo -e "管理前端命令: systemctl restart/reload nginx"
+echo -e "\033[0;32m====================================================\033[0m"
