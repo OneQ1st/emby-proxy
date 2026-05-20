@@ -7,82 +7,105 @@ YELLOW='\033[1;33m'
 NC='\033[0m'
 
 echo -e "\033[0;32m====================================================\033[0m"
-echo -e "\033[0;36m  Emby-Proxy + Caddy(含CF插件) 部署脚本 (智能证书版) \033[0m"
+echo -e "\033[0;36m  Emby-Proxy + Caddy(含CF插件) 智能全检查部署脚本   \033[0m"
 echo -e "\033[0;32m====================================================\033[0m"
 
-# ==================== 1. 基础依赖检查与安装 ====================
-echo -e "${YELLOW}>>> [步骤 1/5] 正在检查并安装基础依赖...${NC}"
+# 创建标准目录（若不存在）
+mkdir -p /etc/caddy
+mkdir -p /opt/emby-proxy
+mkdir -p /opt/emby-proxy/ssl
 
-# 检查命令是否存在的函数
+# 检查命令是否存在的便捷函数
 check_cmd() {
     command -v "$1" >/dev/null 2>&1
 }
 
+# ==================== 1. 基础依赖检查与环境补全 ====================
+echo -e "${YELLOW}>>> [步骤 1/5] 正在检查系统基础依赖环境...${NC}"
+
 NEED_INSTALL=()
-for cmd in curl tar wget git openssl jq; do
+for cmd in curl tar wget git openssl jq gpg; do
     if ! check_cmd "$cmd"; then
         NEED_INSTALL+=("$cmd")
     fi
 done
 
 if [ ${#NEED_INSTALL[@]} -ne 0 ]; then
-    echo -e "${YELLOW}检测到缺失依赖: ${NEED_INSTALL[*]}，正在尝试安装...${NC}"
+    echo -e "${YELLOW}发现缺失基础依赖: ${NEED_INSTALL[*]}，正在补充安装...${NC}"
     apt update -y
-    apt install -y curl tar wget git openssl jq psmisc || {
-        echo -e "${RED}[错误] 依赖安装失败！请检查系统源或网络后重试。${NC}"
+    apt install -y curl tar wget git openssl jq psmisc debian-keyring debian-archive-keyring apt-transport-https || {
+        echo -e "${RED}[错误] 基础依赖安装失败！请检查系统网络或软件源。${NC}"
         exit 1
     }
 else
-    echo -e "${GREEN}所有基础依赖检查通过！${NC}"
+    echo -e "${GREEN}[已通过] 基础系统依赖完整，无需重复安装。${NC}"
 fi
 
-# 创建标准目录
-mkdir -p /etc/caddy
-mkdir -p /opt/emby-proxy
-mkdir -p /opt/emby-proxy/ssl
 
-# ==================== 2. 架构自动检测与二进制下载 ====================
-echo -e "${YELLOW}>>> [步骤 2/5] 正在检测系统架构并下载核心组件...${NC}"
+# ==================== 2. Caddy 及其插件就绪状态检查 ====================
+echo -e "${YELLOW}>>> [步骤 2/5] 正在检查 Caddy 服务及 Cloudflare 插件状态...${NC}"
+CADDY_READY=false
+
+if check_cmd "caddy"; then
+    echo -e "${YELLOW}检测到系统已安装 Caddy，正在校验 Cloudflare 插件...${NC}"
+    if /usr/bin/caddy list-modules | grep -q "dns.providers.cloudflare"; then
+        echo -e "${GREEN}[已通过] 检测到完全符合要求的 Caddy (已集成 Cloudflare 插件)，跳过安装。${NC}"
+        CADDY_READY=true
+    else
+        echo -e "${YELLOW}提示：已安装 Caddy，但未检测到 cloudflare 插件。将为您在线热补丁集成...${NC}"
+    fi
+fi
+
+if [ "$CADDY_READY" = false ]; then
+    if ! check_cmd "caddy"; then
+        echo -e "${YELLOW}正在配置 Caddy 官方 APT 存储库...${NC}"
+        curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor --yes -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+        curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list
+        apt update -y && apt install -y caddy || { echo -e "${RED}[错误] 标准版 Caddy 安装失败！${NC}"; exit 1; }
+    fi
+
+    echo -e "${YELLOW}正在向 Caddy 注入 cloudflare 插件 (进程需要一分钟左右，请稍候)...${NC}"
+    /usr/bin/caddy add-package github.com/caddy-dns/cloudflare || {
+        echo -e "${RED}[错误] 插件集成失败！请检查您的 VPS 到 github.com 的网络连接。${NC}"
+        exit 1
+    }
+    echo -e "${GREEN}Caddy 及其插件环境配置成功！${NC}"
+fi
+
+
+# ==================== 3. 后端 Emby-Proxy 状态检查 ====================
+echo -e "${YELLOW}>>> [步骤 3/5] 正在检查 Emby-Proxy 后端程序...${NC}"
 ARCH=$(uname -m)
-CADDY_VER="2.7.6"
 
-echo -e "${YELLOW}当前系统架构: $ARCH${NC}"
-
-if [ "$ARCH" = "x86_64" ]; then
-    EMBY_PROXY_URL="https://raw.githubusercontent.com/OneQ1st/emby-proxy/main/emby-proxy-amd64"
-    CADDY_URL="https://caddyserver.com/api/download?os=linux&arch=amd64&p=github.com%2Fcaddy-dns%2Fcloudflare&idempotency=emby_caddy_amd64"
-elif [ "$ARCH" = "aarch64" ]; then
-    EMBY_PROXY_URL="https://raw.githubusercontent.com/OneQ1st/emby-proxy/main/emby-proxy-arm64"
-    CADDY_URL="https://caddyserver.com/api/download?os=linux&arch=arm64&p=github.com%2Fcaddy-dns%2Fcloudflare&idempotency=emby_caddy_arm64"
+if [ -x "/opt/emby-proxy/emby-proxy" ]; then
+    echo -e "${GREEN}[已通过] 检测到 /opt/emby-proxy/emby-proxy 已存在且具备执行权限，跳过下载。${NC}"
 else
-    echo -e "${RED}[错误] 暂不支持当前架构: $ARCH${NC}"
-    exit 1
+    echo -e "${YELLOW}未检测到后端程序，正在识别架构并下载...${NC}"
+    if [ "$ARCH" = "x86_64" ]; then
+        EMBY_PROXY_URL="https://raw.githubusercontent.com/OneQ1st/emby-proxy/main/emby-proxy-amd64"
+    elif [ "$ARCH" = "aarch64" ]; then
+        EMBY_PROXY_URL="https://raw.githubusercontent.com/OneQ1st/emby-proxy/main/emby-proxy-arm64"
+    else
+        echo -e "${RED}[错误] 暂不支持当前架构: $ARCH${NC}"
+        exit 1
+    fi
+
+    rm -f /opt/emby-proxy/emby-proxy
+    wget -O /opt/emby-proxy/emby-proxy "$EMBY_PROXY_URL" && chmod +x /opt/emby-proxy/emby-proxy
+    echo -e "${GREEN}后端 emby-proxy 下载并授权成功。${NC}"
 fi
 
-echo -e "${YELLOW}正在下载后端 emby-proxy...${NC}"
-rm -f /opt/emby-proxy/emby-proxy
-wget -O /opt/emby-proxy/emby-proxy "$EMBY_PROXY_URL" && chmod +x /opt/emby-proxy/emby-proxy
 
-echo -e "${YELLOW}正在从 Caddy 官方下载带 Cloudflare 插件的 Caddy 二进制文件...${NC}"
-rm -f /usr/bin/caddy
-wget -O /usr/bin/caddy "$CADDY_URL" && chmod +x /usr/bin/caddy
-
-if ! /usr/bin/caddy list-modules | grep -q "dns.providers.cloudflare"; then
-    echo -e "${RED}[错误] Caddy 环境校验失败，请检查网络或重新运行。${NC}"
-    exit 1
-fi
-echo -e "${GREEN}核心组件下载完成并校验成功。${NC}"
-
-# ==================== 3. 收集参数与智能证书检测 ====================
-echo -e "${YELLOW}>>> [步骤 3/5] 配置参数收集与现有证书扫描...${NC}"
+# ==================== 4. 域名输入与证书智能扫描 ====================
+echo -e "${YELLOW}>>> [步骤 4/5] 配置参数收集与现有证书扫描...${NC}"
 read -p "请输入您的域名 (例如: example.com): " DOMAIN
 
 if [ -z "$DOMAIN" ]; then
-    echo -e "${RED}域名不能为空！${NC}"
+    echo -e "${RED}[错误] 域名不能为空！${NC}"
     exit 1
 fi
 
-# --- 证书自动扫描开始 ---
+# 证书目标路径
 CERT_FILE="/opt/emby-proxy/ssl/fullchain.pem"
 KEY_FILE="/opt/emby-proxy/ssl/privkey.pem"
 
@@ -108,16 +131,14 @@ POSSIBLE_KEYS=(
 
 USE_EXISTING_CERT=false
 
-echo -e "${YELLOW}正在扫描 VPS 常见标准路径，寻找匹配 [$DOMAIN] 的证书...${NC}"
+echo -e "${YELLOW}正在扫描本地常见路径，寻找匹配 [$DOMAIN] 的有效证书...${NC}"
 for idx in "${!POSSIBLE_CERTS[@]}"; do
     cert_path="${POSSIBLE_CERTS[$idx]}"
     key_path="${POSSIBLE_KEYS[$idx]}"
     
     if [ -s "$cert_path" ] && [ -s "$key_path" ]; then
-        # 校验证书是否包含当前域名
         if openssl x509 -in "$cert_path" -noout -text 2>/dev/null | grep -q "$DOMAIN"; then
-            echo -e "${GREEN}发现匹配域名的有效证书: $cert_path${NC}"
-            # 如果不是目标路径，则建立软链接
+            echo -e "${GREEN}[已通过] 发现匹配域名的本地有效证书: $cert_path${NC}"
             if [ "$cert_path" != "$CERT_FILE" ]; then
                 ln -sf "$cert_path" "$CERT_FILE"
                 ln -sf "$key_path" "$KEY_FILE"
@@ -128,50 +149,83 @@ for idx in "${!POSSIBLE_CERTS[@]}"; do
     fi
 done
 
-# --- 未检测到证书，提示手动输入 ---
+# 未扫描到证书，进入增强回落交互（支持路径指定或纯文本粘贴）
 if [ "$USE_EXISTING_CERT" = false ]; then
-    echo -e "${YELLOW}未在系统标准路径下找到匹配域名 [$DOMAIN] 的有效证书。${NC}"
-    read -p "是否需要手动配置自定义证书路径？(y/n, 默认 n): " PROVIDE_CERT
+    echo -e "${YELLOW}提示：未在系统常见路径下自动发现匹配域名 [$DOMAIN] 的本地证书。${NC}"
+    read -p "是否需要手动配置/粘贴 Cloudflare 源服务器证书？(y/n, 默认 n): " PROVIDE_CERT
     
     if [[ "$PROVIDE_CERT" =~ ^[Yy](es)?$ ]]; then
-        read -p "请输入证书完整路径 (fullchain.pem 或 .crt): " USER_CERT
-        read -p "请输入私钥完整路径 (privkey.pem 或 .key): " USER_KEY
+        echo -e "\n请选择提供证书的方式:"
+        echo -e "1) 输入已有证书和私钥的【绝对文件路径】"
+        echo -e "2) 直接【手动粘贴】Cloudflare 源服务器证书/私钥文本内容"
+        read -p "请选择 [1/2]: " CERT_INPUT_MODE
         
-        if [ -s "$USER_CERT" ] && [ -s "$USER_KEY" ]; then
-            ln -sf "$USER_CERT" "$CERT_FILE"
-            ln -sf "$USER_KEY" "$KEY_FILE"
-            echo -e "${GREEN}>>> 自定义证书路径导入成功！${NC}"
-            USE_EXISTING_CERT=true
+        if [ "$CERT_INPUT_MODE" == "1" ]; then
+            read -p "请输入证书完整路径 (fullchain.pem 或 .crt): " USER_CERT
+            read -p "请输入私钥完整路径 (privkey.pem 或 .key): " USER_KEY
+            
+            if [ -s "$USER_CERT" ] && [ -s "$USER_KEY" ]; then
+                ln -sf "$USER_CERT" "$CERT_FILE"
+                ln -sf "$USER_KEY" "$KEY_FILE"
+                echo -e "${GREEN}>>> 自定义本地证书文件导入成功！${NC}"
+                USE_EXISTING_CERT=true
+            else
+                echo -e "${RED}>>> 输入的路径文件不存在或不可读，系统将退回到 Caddy 自动申请方案。${NC}"
+            fi
+            
+        elif [ "$CERT_INPUT_MODE" == "2" ]; then
+            echo -e "${YELLOW}\n[提示] 请粘贴您的证书内容 (以 -----BEGIN CERTIFICATE----- 开头)，完成后换行输入 EOF 并回车确认:${NC}"
+            rm -f "$CERT_FILE"
+            while IFS= read -r line; do
+                [[ "$line" == "EOF" ]] && break
+                echo "$line" >> "$CERT_FILE"
+            done
+            
+            echo -e "${YELLOW}\n[提示] 请粘贴您的私钥内容 (以 -----BEGIN PRIVATE KEY----- 开头)，完成后换行输入 EOF 并回车确认:${NC}"
+            rm -f "$KEY_FILE"
+            while IFS= read -r line; do
+                [[ "$line" == "EOF" ]] && break
+                echo "$line" >> "$KEY_FILE"
+            done
+            
+            # 校验粘贴内容的合法性
+            if [ -s "$CERT_FILE" ] && [ -s "$KEY_FILE" ] && openssl x509 -in "$CERT_FILE" -noout >/dev/null 2>&1; then
+                echo -e "${GREEN}>>> 粘贴的 Cloudflare 源服务器证书及私钥解析并保存成功！${NC}"
+                USE_EXISTING_CERT=true
+            else
+                echo -e "${RED}>>> 证书解析失败（可能复制不全或格式错误），系统将退回到 Caddy 自动申请方案。${NC}"
+                rm -f "$CERT_FILE" "$KEY_FILE"
+            fi
         else
-            echo -e "${RED}>>> 输入的路径无效或文件为空，将切入 Caddy 自动申请流程。${NC}"
+            echo -e "${RED}输入错误，退回到自动申请方案。${NC}"
         fi
     fi
 fi
 
-# 其余端口和邮箱参数收集
+# 其余运行参数收集
 read -p "请输入 HTTPS 外部访问端口 (默认 443): " EX_PORT
 EX_PORT=${EX_PORT:-443}
-read -p "请输入 HTTP 默认端口 (若被占用可修改，默认 80): " HTTP_PORT
+read -p "请输入 HTTP 默认端口 (若 80 被占用可自定义修改，默认 80): " HTTP_PORT
 HTTP_PORT=${HTTP_PORT:-80}
-read -p "请输入邮箱 (用于 ACME 证书申请通知): " MY_EMAIL
+read -p "请输入邮箱 (用于自动化证书申请/续期通知): " MY_EMAIL
 
 if [ "$USE_EXISTING_CERT" = false ]; then
     echo -e "\n请选择 Caddy 证书申请验证方式:"
-    echo -e "1) Cloudflare DNS 验证 (无需开放 80 端口，支持 CDN/内网)"
-    echo -e "2) HTTP 自动挑战验证 (请确保上方的 HTTP 端口在公网可通过 80 端口映射访问)"
+    echo -e "1) Cloudflare DNS 挑战 (推荐，无需开放 80 端口)"
+    echo -e "2) HTTP 自动挑战 (请确保上述指定的 HTTP 端口能接收外部 80 端口的流量)"
     read -p "选择 [1/2]: " AUTH_MODE
 fi
 
-# ==================== 4. 动态生成 Caddyfile 配置 ====================
-echo -e "${YELLOW}>>> [步骤 4/5] 正在生成标准全局 Caddyfile 配置...${NC}"
 
-# 基础全局块配置
+# ==================== 5. 动态生成符合规范的 Caddyfile ====================
+echo -e "${YELLOW}>>> [步骤 5/5] 正在生成全局标准化 Caddyfile 配置...${NC}"
+
 GLOBAL_BLOCK="email $MY_EMAIL
     http_port $HTTP_PORT
     https_port $EX_PORT"
 
 if [ "$USE_EXISTING_CERT" = true ]; then
-    # 使用本地已有证书或手动证书
+    # 场景 A：复用本地已有、手动指定、或刚刚粘贴的证书文件
     cat <<CADDY_EOF > /etc/caddy/Caddyfile
 {
     $GLOBAL_BLOCK
@@ -189,9 +243,9 @@ $DOMAIN:$EX_PORT {
 CADDY_EOF
 
 else
-    # 走 Caddy 自动申请逻辑
+    # 场景 B：完全交给 Caddy 自动托管申请
     if [ "$AUTH_MODE" == "1" ]; then
-        read -p "请输入 Cloudflare API Token (需具备 DNS:Edit 权限): " CF_TOKEN
+        read -p "请输入 Cloudflare API Token (需具备该域名 DNS:Edit 权限): " CF_TOKEN
         cat <<CADDY_EOF > /etc/caddy/Caddyfile
 {
     $GLOBAL_BLOCK
@@ -227,10 +281,9 @@ CADDY_EOF
     fi
 fi
 
-# ==================== 5. 配置 Systemd 服务并启动 ====================
-echo -e "${YELLOW}>>> [步骤 5/5] 正在配置系统守护进程并启动...${NC}"
 
-# 后端代理服务
+# ==================== 6. Systemd 服务配置与最终检查 ====================
+# 后端 Systemd
 cat <<SVC_EOF > /etc/systemd/system/emby-backend.service
 [Unit]
 Description=Emby Proxy Backend
@@ -246,7 +299,7 @@ RestartSec=5
 WantedBy=multi-user.target
 SVC_EOF
 
-# 前端标准 Caddy 服务
+# 前端 Systemd
 cat <<SVC_EOF > /etc/systemd/system/caddy.service
 [Unit]
 Description=Caddy
@@ -271,22 +324,28 @@ AmbientCapabilities=CAP_NET_BIND_SERVICE
 WantedBy=multi-user.target
 SVC_EOF
 
-# 启动服务
+# 服务加载与重启
 systemctl daemon-reload
 systemctl enable --now emby-backend caddy
+systemctl restart emby-backend caddy
+
+sleep 1.5
 
 echo -e "${GREEN}====================================================${NC}"
-echo -e "${GREEN}部署完成！系统已恢复运行。${NC}"
+echo -e "${GREEN}【全自检运行成功】标准路径部署完毕。${NC}"
 echo -e "访问地址: ${YELLOW}https://$DOMAIN:$EX_PORT${NC}"
-if [ "$USE_EXISTING_CERT" = true ]; then
-    echo -e "证书状态: ${GREEN}已成功复用本地证书进行配置${NC}"
-else
-    echo -e "证书状态: ${YELLOW}正在通过 Caddy 进行后台托管申请...${NC}"
-fi
 echo -e "----------------------------------------------------"
-echo -e "Caddy 配置文件路径:  /etc/caddy/Caddyfile"
-echo -e "管理命令:"
-echo -e "  查看前端日志:  journalctl -u caddy --no-pager -n 30"
-echo -e "  查看后端日志:  journalctl -u emby-backend --no-pager -n 30"
-echo -e "  重启所有服务:  systemctl restart emby-backend caddy"
-echo -e "${GREEN}====================================================${NC}"
+echo -e "Caddy 配置路径:  /etc/caddy/Caddyfile"
+echo -e "服务运行状态检测:"
+if systemctl is-active --quiet caddy; then
+    echo -e "  Caddy 前端状态:   ${GREEN}● Running (正常)${NC}"
+else
+    echo -e "  Caddy 前端状态:   ${RED}● Failed (异常，请执行 journalctl -u caddy 查看原因)${NC}"
+fi
+
+if systemctl is-active --quiet emby-backend; then
+    echo -e "  Proxy 后端状态:   ${GREEN}● Running (正常)${NC}"
+else
+    echo -e "  Proxy 后端状态:   ${RED}● Failed (异常)${NC}"
+fi
+echo -e "====================================================${NC}"
