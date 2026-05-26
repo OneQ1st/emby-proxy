@@ -157,7 +157,7 @@ for idx in "${!POSSIBLE_CERTS[@]}"; do
     fi
 done
 
-# 未扫描到证书，进入增强回落交互
+# 未扫描到证书，进入增强回落交互（支持路径指定或纯文本粘贴）
 if [ "$USE_EXISTING_CERT" = false ]; then
     echo -e "${YELLOW} ℹ 提示：未在系统常见路径下自动发现匹配域名 [$DOMAIN] 的本地证书。${NC}"
     read -p " 是否需要手动配置/粘贴 Cloudflare 源服务器证书？(y/n, 默认 n): " PROVIDE_CERT
@@ -186,16 +186,21 @@ if [ "$USE_EXISTING_CERT" = false ]; then
             echo -e "${YELLOW}│ 请右键粘贴您的证书内容 (以 -----BEGIN CERTIFICATE----- 开头)  │${NC}"
             echo -e "${YELLOW}│ 粘贴完成后，另起新的一行，输入大写 ${BOLD}EOF${NC}${YELLOW} 并回车确认：         │${NC}"
             echo -e "${YELLOW}└──────────────────────────────────────────────────────┘${NC}"
-            # 优化：改用标准的 cat << 'EOF' 规避 read 循环死锁隐患
-            cat << 'EOF' > "$CERT_FILE"
-EOF
-            cat > "$CERT_FILE"
+            rm -f "$CERT_FILE"
+            while IFS= read -r line; do
+                [[ "$line" == "EOF" ]] && break
+                echo "$line" >> "$CERT_FILE"
+            done
             
             echo -e "\n${YELLOW}┌─────────────────── 私钥粘贴引导框 ───────────────────┐${NC}"
             echo -e "${YELLOW}│ 请右键粘贴您的私钥内容 (以 -----BEGIN PRIVATE KEY----- 开头)  │${NC}"
             echo -e "${YELLOW}│ 粘贴完成后，另起新的一行，输入大写 ${BOLD}EOF${NC}${YELLOW} 并回车确认：         │${NC}"
             echo -e "${YELLOW}└──────────────────────────────────────────────────────┘${NC}"
-            cat > "$KEY_FILE"
+            rm -f "$KEY_FILE"
+            while IFS= read -r line; do
+                [[ "$line" == "EOF" ]] && break
+                echo "$line" >> "$KEY_FILE"
+            done
             
             # 校验粘贴内容的合法性
             if [ -s "$CERT_FILE" ] && [ -s "$KEY_FILE" ] && openssl x509 -in "$CERT_FILE" -noout >/dev/null 2>&1; then
@@ -220,27 +225,26 @@ read -p " 请输入 HTTP 默认端口 (若 80 被占用可自定义修改，默�
 HTTP_PORT=${HTTP_PORT:-80}
 read -p " 请输入邮箱 (用于自动化证书申请/续期通知): " MY_EMAIL
 
-# 修复逻辑漏洞：确保无论如何 AUTH_MODE 都有默认值
-AUTH_MODE="2" 
 if [ "$USE_EXISTING_CERT" = false ]; then
     echo -e "\n 请选择 Caddy 证书申请验证方式:"
     echo -e "  ${BOLD}1)${NC} Cloudflare DNS 挑战 (${PURPLE}推荐，无需开放 80 端口${NC})"
     echo -e "  ${BOLD}2)${NC} HTTP 自动挑战 (请确保上述指定的 HTTP 端口能接收外部 80 端口的流量)"
-    read -p " 选择 [1/2] (默认 2): " USER_AUTH_MODE
-    AUTH_MODE=${USER_AUTH_MODE:-2}
+    read -p " 选择 [1/2]: " AUTH_MODE
 fi
 
 
 # ==================== 5. 动态生成符合规范的 Caddyfile ====================
-echo -e "\n${BLUE}${BOLD}▶ [步骤 5/5] 正在生成全局标准化 Caddyfile配置...${NC}"
+echo -e "\n${BLUE}${BOLD}▶ [步骤 5/5] 正在生成全局标准化 Caddyfile 配置...${NC}"
 echo -e "${BLUE}──────────────────────────────────────────────────${NC}"
+
+GLOBAL_BLOCK="email $MY_EMAIL
+    http_port $HTTP_PORT
+    https_port $HTTPS_PORT"
 
 if [ "$USE_EXISTING_CERT" = true ]; then
     cat <<CADDY_EOF > /opt/emby-proxy/Caddyfile
 {
-    email $MY_EMAIL
-    http_port $HTTP_PORT
-    https_port $HTTPS_PORT
+    $GLOBAL_BLOCK
 }
 
 $DOMAIN:$DOMAIN_PORT {
@@ -259,9 +263,7 @@ else
         read -p " 请输入 Cloudflare API Token (需具备该域名 DNS:Edit 权限): " CF_TOKEN
         cat <<CADDY_EOF > /opt/emby-proxy/Caddyfile
 {
-    email $MY_EMAIL
-    http_port $HTTP_PORT
-    https_port $HTTPS_PORT
+    $GLOBAL_BLOCK
     acme_dns cloudflare $CF_TOKEN
 }
 
@@ -273,9 +275,9 @@ $DOMAIN:$DOMAIN_PORT {
         flush_interval -1
         
         transport http {
-            dial_timeout 3s
-            keep_alive_idle_timeout 60s
-            max_conns_per_host 1024
+        dial_timeout 3s
+        keep_alive_idle_timeout 60s
+        max_conns_per_host 1024
         }
     }
 }
@@ -283,9 +285,7 @@ CADDY_EOF
     else
         cat <<CADDY_EOF > /opt/emby-proxy/Caddyfile
 {
-    email $MY_EMAIL
-    http_port $HTTP_PORT
-    https_port $HTTPS_PORT
+    $GLOBAL_BLOCK
 }
 
 $DOMAIN:$DOMAIN_PORT {
@@ -300,9 +300,9 @@ $DOMAIN:$DOMAIN_PORT {
         flush_interval -1
         
         transport http {
-            dial_timeout 3s
-            keep_alive_idle_timeout 60s
-            max_conns_per_host 1024
+        dial_timeout 3s
+        keep_alive_idle_timeout 60s
+        max_conns_per_host 1024
         }
     }
 }
