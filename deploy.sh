@@ -1,13 +1,13 @@
 #!/bin/bash
 
 # 颜色定义
-RED='\033;31m'
-GREEN='\033;32m'
-YELLOW='\033[1;33m'
-BLUE='\033;36m'
-PURPLE='\033;35m'
-BOLD='\033[1m'
-NC='\033[0m'
+RED='\e[31m'
+GREEN='\e[32m'
+YELLOW='\e[33m'
+BLUE='\e[36m'
+PURPLE='\e[35m'
+BOLD='\e[1m'
+NC='\e[0m'
 
 clear
 echo -e "${BLUE}${BOLD}┌──────────────────────────────────────────────────┐${NC}"
