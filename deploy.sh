@@ -1,11 +1,11 @@
 #!/bin/bash
 
 # 颜色定义
-RED='\033[0;31m'
-GREEN='\033[0;32m'
+RED='\033;31m'
+GREEN='\033;32m'
 YELLOW='\033[1;33m'
-BLUE='\033[0;36m'
-PURPLE='\033[0;35m'
+BLUE='\033;36m'
+PURPLE='\033;35m'
 BOLD='\033[1m'
 NC='\033[0m'
 
@@ -13,6 +13,72 @@ clear
 echo -e "${BLUE}${BOLD}┌──────────────────────────────────────────────────┐${NC}"
 echo -e "${BLUE}${BOLD}│  Emby-Proxy + Caddy(含CF插件) 智能全自检部署脚本 │${NC}"
 echo -e "${BLUE}${BOLD}└──────────────────────────────────────────────────┘${NC}"
+
+# ==================== 0. 互动式功能选择 ====================
+echo -e "\n${BLUE}${BOLD}📊 请选择要执行的操作：${NC}"
+echo -e "  ${BOLD}1)${NC} ${GREEN}智能自检部署 / 更新环境${NC}"
+echo -e "  ${BOLD}2)${NC} ${RED}一键完全卸载 (清理服务与数据)${NC}"
+read -p " 请输入数字 [1/2]: " MAIN_CHOICE
+
+# ----------------- 卸载逻辑分支 -----------------
+if [ "$MAIN_CHOICE" == "2" ]; then
+    echo -e "\n${YELLOW}${BOLD}⚠️  警告：该操作将停止并删除 Emby-Proxy 与 Caddy 服务，清空所有相关配置与证书！${NC}"
+    read -p " 确认要继续卸载吗？(y/n, 默认 n): " CONFIRM_UNINSTALL
+    if [[ ! "$CONFIRM_UNINSTALL" =~ ^[Yy](es)?$ ]]; then
+        echo -e "${GREEN} ℹ 已取消卸载操作。${NC}"
+        exit 0
+    fi
+
+    echo -e "\n${BLUE}${BOLD}▶ 正在清理系统服务...${NC}"
+    echo -e "${BLUE}──────────────────────────────────────────────────${NC}"
+    
+    # 1. 停止并禁用 Systemd 服务
+    for svc in emby-backend caddy; do
+        if systemctl is-active --quiet "$svc" || systemctl is-enabled --quiet "$svc" 2>/dev/null; then
+            echo -e "${YELLOW} ℹ 正在停止并禁用服务: $svc...${NC}"
+            systemctl stop "$svc" >/dev/null 2>&1
+            systemctl disable "$svc" >/dev/null 2>&1
+        fi
+    done
+
+    # 2. 清除 Systemd 服务文件
+    rm -f /etc/systemd/system/emby-backend.service
+    rm -f /etc/systemd/system/caddy.service
+    systemctl daemon-reload
+    echo -e "${GREEN} ✔ Systemd 服务配置清理完毕。${NC}"
+
+    # 3. 清理程序目录与配置文件
+    echo -e "${YELLOW} ℹ 正在删除程序目录与配置文件...${NC}"
+    rm -rf /opt/emby-proxy
+    rm -rf /etc/caddy
+    echo -e "${GREEN} ✔ 部署目录（含证书、Caddyfile）已彻底删除。${NC}"
+
+    # 4. 解除 Caddy 官方 APT 软件源（可选，防止影响系统后续更新）
+    if [ -f "/etc/apt/sources.list.d/caddy-stable.list" ]; then
+        read -p " 是否同步卸载 Caddy 的 APT 软件源与主程序？(y/n, 默认 n): " RM_CADDY_APT
+        if [[ "$RM_CADDY_APT" =~ ^[Yy](es)?$ ]]; then
+            echo -e "${YELLOW} ℹ 正在卸载 Caddy 软件源及主程序...${NC}"
+            apt purge -y caddy >/dev/null 2>&1
+            rm -f /etc/apt/sources.list.d/caddy-stable.list
+            rm -f /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+            apt update -y >/dev/null 2>&1
+            echo -e "${GREEN} ✔ Caddy APT 源及主程序已卸载。${NC}"
+        fi
+    fi
+
+    echo -e "\n${GREEN}${BOLD}┌────────────────────────────────────────────────────────┐${NC}"
+    echo -e "${GREEN}${BOLD}│ 🎉 卸载完成！Emby-Proxy 相关服务及文件已彻底清理干净。 │${NC}"
+    echo -e "${GREEN}${BOLD}└────────────────────────────────────────────────────────┘${NC}\n"
+    exit 0
+
+# ----------------- 错误输入防御 -----------------
+elif [ "$MAIN_CHOICE" != "1" ]; then
+    echo -e "${RED} ✖ [错误] 输入无效，脚本退出。${NC}"
+    exit 1
+fi
+
+
+# ==================== 原部署逻辑开始（代码一律未动） ====================
 
 # 创建标准目录（若不存在）
 mkdir -p /etc/caddy
