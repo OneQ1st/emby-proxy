@@ -14,8 +14,27 @@ echo -e "${BLUE}${BOLD}┌──────────────────
 echo -e "${BLUE}${BOLD}│  Emby-Proxy + Caddy(含CF插件) 智能全自检部署脚本 │${NC}"
 echo -e "${BLUE}${BOLD}└──────────────────────────────────────────────────┘${NC}"
 
+# ==================== 系统环境智能识别 ====================
+if [ -f /etc/alpine-release ]; then
+    OS_TYPE="alpine"
+    INIT_SYSTEM="openrc"
+elif [ -f /etc/debian_version ] || [ -f /etc/lsb-release ]; then
+    OS_TYPE="debian"
+    INIT_SYSTEM="systemd"
+else
+    # 兜底判断，尝试通过命令识别
+    if command -v apk >/dev/null 2>&1; then
+        OS_TYPE="alpine"
+        INIT_SYSTEM="openrc"
+    else
+        OS_TYPE="debian"
+        INIT_SYSTEM="systemd"
+    fi
+fi
+
 # ==================== 0. 互动式功能选择 ====================
 echo -e "\n${BLUE}${BOLD}📊 请选择要执行的操作：${NC}"
+echo -e "  ${BOLD}1)${NC} ${GREEN}智能自检部署 / 更新环境${NC}"
 echo -e "  ${BOLD}1)${NC} ${GREEN}智能自检部署 / 更新环境${NC}"
 echo -e "  ${BOLD}2)${NC} ${RED}一键完全卸载 (清理服务与数据)${NC}"
 read -p " 请输入数字 [1/2]: " MAIN_CHOICE
@@ -32,20 +51,33 @@ if [ "$MAIN_CHOICE" == "2" ]; then
     echo -e "\n${BLUE}${BOLD}▶ 正在清理系统服务...${NC}"
     echo -e "${BLUE}──────────────────────────────────────────────────${NC}"
     
-    # 1. 停止并禁用 Systemd 服务
-    for svc in emby-backend caddy; do
-        if systemctl is-active --quiet "$svc" || systemctl is-enabled --quiet "$svc" 2>/dev/null; then
-            echo -e "${YELLOW} ℹ 正在停止并禁用服务: $svc...${NC}"
-            systemctl stop "$svc" >/dev/null 2>&1
-            systemctl disable "$svc" >/dev/null 2>&1
-        fi
-    done
-
-    # 2. 清除 Systemd 服务文件
-    rm -f /etc/systemd/system/emby-backend.service
-    rm -f /etc/systemd/system/caddy.service
-    systemctl daemon-reload
-    echo -e "${GREEN} ✔ Systemd 服务配置清理完毕。${NC}"
+    # 1. 停止并禁用服务 (兼容 Systemd & OpenRC)
+    if [ "$INIT_SYSTEM" = "systemd" ]; then
+        for svc in emby-backend caddy; do
+            if systemctl is-active --quiet "$svc" || systemctl is-enabled --quiet "$svc" 2>/dev/null; then
+                echo -e "${YELLOW} ℹ 正在停止并禁用服务: $svc...${NC}"
+                systemctl stop "$svc" >/dev/null 2>&1
+                systemctl disable "$svc" >/dev/null 2>&1
+            fi
+        done
+        rm -f /etc/systemd/system/emby-backend.service
+        rm -f /etc/systemd/system/caddy.service
+        systemctl daemon-reload
+    else
+        # OpenRC 卸载逻辑
+        for svc in emby-backend caddy; do
+            if rc-service "$svc" status >/dev/null 2>&1; then
+                echo -e "${YELLOW} ℹ 正在停止服务: $svc...${NC}"
+                rc-service "$svc" stop >/dev/null 2>&1
+            fi
+            if rc-update show default | grep -q "$svc"; then
+                echo -e "${YELLOW} ℹ 正在移除自启: $svc...${NC}"
+                rc-update del "$svc" default >/dev/null 2>&1
+            fi
+            rm -f /etc/init.d/$svc
+        done
+    fi
+    echo -e "${GREEN} ✔ 系统服务配置清理完毕。${NC}"
 
     # 3. 清理程序目录与配置文件
     echo -e "${YELLOW} ℹ 正在删除程序目录与配置文件...${NC}"
@@ -53,8 +85,8 @@ if [ "$MAIN_CHOICE" == "2" ]; then
     rm -rf /etc/caddy
     echo -e "${GREEN} ✔ 部署目录（含证书、Caddyfile）已彻底删除。${NC}"
 
-    # 4. 解除 Caddy 官方 APT 软件源（可选，防止影响系统后续更新）
-    if [ -f "/etc/apt/sources.list.d/caddy-stable.list" ]; then
+    # 4. 解除官方存储库或包（根据系统分别处理）
+    if [ "$OS_TYPE" = "debian" ] && [ -f "/etc/apt/sources.list.d/caddy-stable.list" ]; then
         read -p " 是否同步卸载 Caddy 的 APT 软件源与主程序？(y/n, 默认 n): " RM_CADDY_APT
         if [[ "$RM_CADDY_APT" =~ ^[Yy](es)?$ ]]; then
             echo -e "${YELLOW} ℹ 正在卸载 Caddy 软件源及主程序...${NC}"
@@ -63,6 +95,13 @@ if [ "$MAIN_CHOICE" == "2" ]; then
             rm -f /usr/share/keyrings/caddy-stable-archive-keyring.gpg
             apt update -y >/dev/null 2>&1
             echo -e "${GREEN} ✔ Caddy APT 源及主程序已卸载。${NC}"
+        fi
+    elif [ "$OS_TYPE" = "alpine" ]; then
+        read -p " 是否同步卸载通过 apk 安装的 Caddy 主程序？(y/n, 默认 n): " RM_CADDY_APK
+        if [[ "$RM_CADDY_APK" =~ ^[Yy](es)?$ ]]; then
+            echo -e "${YELLOW} ℹ 正在卸载 Caddy 主程序...${NC}"
+            apk del caddy >/dev/null 2>&1
+            echo -e "${GREEN} ✔ Caddy 主程序已卸载。${NC}"
         fi
     fi
 
@@ -103,11 +142,20 @@ done
 
 if [ ${#NEED_INSTALL[@]} -ne 0 ]; then
     echo -e "${YELLOW} ℹ 发现缺失基础依赖: ${NEED_INSTALL[*]}，正在补充安装...${NC}"
-    apt update -y
-    apt install -y curl tar wget git openssl jq psmisc debian-keyring debian-archive-keyring apt-transport-https || {
-        echo -e "${RED} ✖ [错误] 基础依赖安装失败！请检查系统网络或软件源。${NC}"
-        exit 1
-    }
+    if [ "$OS_TYPE" = "debian" ]; then
+        apt update -y
+        apt install -y curl tar wget git openssl jq psmisc debian-keyring debian-archive-keyring apt-transport-https || {
+            echo -e "${RED} ✖ [错误] 基础依赖安装失败！请检查系统网络或软件源。${NC}"
+            exit 1
+        }
+    else
+        # Alpine Linux 依赖安装 (使用 apk 补全对应依赖，bash与libc兼容包提前引入)
+        apk update
+        apk add curl tar wget git openssl jq psmisc bash coreutils libc6-compat || {
+            echo -e "${RED} ✖ [错误] Alpine 基础依赖安装失败！请检查系统网络或软件源。${NC}"
+            exit 1
+        }
+    fi
 else
     echo -e "${GREEN} ✔ [已通过] 基础系统依赖完整，无需重复安装。${NC}"
 fi
@@ -118,9 +166,12 @@ echo -e "\n${BLUE}${BOLD}▶ [步骤 2/5] 正在检查 Caddy 服务及 Cloudflar
 echo -e "${BLUE}──────────────────────────────────────────────────${NC}"
 CADDY_READY=false
 
+# 预先定位真实有效的 caddy 可执行路径
+CADDY_BIN="/usr/bin/caddy"
 if check_cmd "caddy"; then
+    CADDY_BIN=$(command -v caddy)
     echo -e "${YELLOW} ℹ 检测到系统已安装 Caddy，正在校验 Cloudflare 插件...${NC}"
-    if /usr/bin/caddy list-modules | grep -q "dns.providers.cloudflare"; then
+    if "$CADDY_BIN" list-modules | grep -q "dns.providers.cloudflare"; then
         echo -e "${GREEN} ✔ [已通过] 检测到完全符合要求的 Caddy (已集成 Cloudflare 插件)，跳过安装。${NC}"
         CADDY_READY=true
     else
@@ -130,14 +181,22 @@ fi
 
 if [ "$CADDY_READY" = false ]; then
     if ! check_cmd "caddy"; then
-        echo -e "${YELLOW} ℹ 正在配置 Caddy 官方 APT 存储库...${NC}"
-        curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor --yes -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-        curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list
-        apt update -y && apt install -y caddy || { echo -e "${RED} ✖ [错误] 标准版 Caddy 安装失败！${NC}"; exit 1; }
+        if [ "$OS_TYPE" = "debian" ]; then
+            echo -e "${YELLOW} ℹ 正在配置 Caddy 官方 APT 存储库...${NC}"
+            curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor --yes -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+            curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list
+            apt update -y && apt install -y caddy || { echo -e "${RED} ✖ [错误] 标准版 Caddy 安装失败！${NC}"; exit 1; }
+            CADDY_BIN="/usr/bin/caddy"
+        else
+            echo -e "${YELLOW} ℹ 正在通过 apk 安装官方 Caddy...${NC}"
+            apk add caddy || { echo -e "${RED} ✖ [错误] Alpine 标准版 Caddy 安装失败！${NC}"; exit 1; }
+            CADDY_BIN="/usr/sbin/caddy" # Alpine 默认路径常为 /usr/sbin/caddy
+            [ ! -f "$CADDY_BIN" ] && CADDY_BIN=$(command -v caddy)
+        fi
     fi
 
     echo -e "${YELLOW} ℹ 正在向 Caddy 注入 cloudflare 插件 (进程需要一分钟左右，请稍候)...${NC}"
-    /usr/bin/caddy add-package github.com/caddy-dns/cloudflare || {
+    "$CADDY_BIN" add-package github.com/caddy-dns/cloudflare || {
         echo -e "${RED} ✖ [错误] 插件集成失败！请检查您的 VPS 到 github.com 的 network 状态。${NC}"
         exit 1
     }
@@ -408,9 +467,11 @@ CADDY_EOF
 fi
 
 
-# ==================== 6. Systemd 服务配置与最终检查 ====================
-# 后端 Systemd
-cat <<SVC_EOF > /etc/systemd/system/emby-backend.service
+# ==================== 6. 服务配置与最终检查 (分流 Systemd 与 OpenRC) ====================
+if [ "$INIT_SYSTEM" = "systemd" ]; then
+    # ---------- Debian / Ubuntu Systemd 托管 ----------
+    # 后端 Systemd
+    cat <<SVC_EOF > /etc/systemd/system/emby-backend.service
 [Unit]
 Description=Emby Proxy Backend
 After=network.target
@@ -425,8 +486,8 @@ RestartSec=5
 WantedBy=multi-user.target
 SVC_EOF
 
-# 前端 Systemd
-cat <<SVC_EOF > /etc/systemd/system/caddy.service
+    # 前端 Systemd
+    cat <<SVC_EOF > /etc/systemd/system/caddy.service
 [Unit]
 Description=Caddy
 Documentation=https://caddyserver.com/docs/
@@ -437,8 +498,8 @@ Requires=network-online.target
 Type=notify
 User=root
 Group=root
-ExecStart=/usr/bin/caddy run --environ --config /opt/emby-proxy/Caddyfile
-ExecReload=/usr/bin/caddy reload --config /opt/emby-proxy/Caddyfile --force
+ExecStart=$CADDY_BIN run --environ --config /opt/emby-proxy/Caddyfile
+ExecReload=$CADDY_BIN reload --config /opt/emby-proxy/Caddyfile --force
 TimeoutStopSec=5s
 LimitNOFILE=1048576
 LimitNPROC=512
@@ -450,10 +511,52 @@ AmbientCapabilities=CAP_NET_BIND_SERVICE
 WantedBy=multi-user.target
 SVC_EOF
 
-# 服务加载与重启
-systemctl daemon-reload
-systemctl enable --now emby-backend caddy >/dev/null 2>&1
-systemctl restart emby-backend caddy >/dev/null 2>&1
+    # 服务加载与重启
+    systemctl daemon-reload
+    systemctl enable --now emby-backend caddy >/dev/null 2>&1
+    systemctl restart emby-backend caddy >/dev/null 2>&1
+
+else
+    # ---------- Alpine Linux OpenRC 托管 ----------
+    # 后端 OpenRC 脚本
+    cat <<'OPENRC_EOF' > /etc/init.d/emby-backend
+#!/sbin/openrc-run
+description="Emby Proxy Backend"
+supervisor="supervise-daemon"
+command="/opt/emby-proxy/emby-proxy"
+directory="/opt/emby-proxy"
+respawn_delay=5
+respawn_max=0
+
+depend() {
+    need net
+    after firewall
+}
+OPENRC_EOF
+    chmod +x /etc/init.d/emby-backend
+
+    # 前端 OpenRC 脚本
+    cat <<OPENRC_EOF > /etc/init.d/caddy
+#!/sbin/openrc-run
+description="Caddy Web Server"
+supervisor="supervise-daemon"
+command="$CADDY_BIN"
+command_args="run --config /opt/emby-proxy/Caddyfile"
+directory="/opt/emby-proxy"
+
+depend() {
+    need net
+    after firewall
+}
+OPENRC_EOF
+    chmod +x /etc/init.d/caddy
+
+    # 服务加载与重启
+    rc-update add emby-backend default >/dev/null 2>&1
+    rc-update add caddy default >/dev/null 2>&1
+    rc-service emby-backend restart >/dev/null 2>&1
+    rc-service caddy restart >/dev/null 2>&1
+fi
 
 sleep 1.5
 
@@ -467,13 +570,26 @@ echo -e " ───────────────────────�
 echo -e "  🌐 访问入口地址:  ${GREEN}${BOLD}https://$DOMAIN:$DOMAIN_PORT${NC}"
 echo -e "  📄 Caddy配置路径:  ${BLUE}/opt/emby-proxy/Caddyfile${NC}"
 
-if systemctl is-active --quiet caddy; then
-    echo -e "  ⚡ Caddy 前端状态: ${GREEN}${BOLD}● Running (正常运行)${NC}"
+# 跨系统服务运行状态校验
+STATUS_CADDY=false
+STATUS_BACKEND=false
+
+if [ "$INIT_SYSTEM" = "systemd" ]; then
+    systemctl is-active --quiet caddy && STATUS_CADDY=true
+    systemctl is-active --quiet emby-backend && STATUS_BACKEND=true
 else
-    echo -e "  ⚡ Caddy 前端状态: ${RED}${BOLD}● Failed (启动异常，输入 'journalctl -u caddy' 诊断)${NC}"
+    rc-service caddy status >/dev/null 2>&1 && STATUS_CADDY=true
+    rc-service emby-backend status >/dev/null 2>&1 && STATUS_BACKEND=true
 fi
 
-if systemctl is-active --quiet emby-backend; then
+if [ "$STATUS_CADDY" = true ]; then
+    echo -e "  ⚡ Caddy 前端状态: ${GREEN}${BOLD}● Running (正常运行)${NC}"
+else
+    DIAG_CMD=$([ "$INIT_SYSTEM" = "systemd" ] && echo "journalctl -u caddy" || echo "rc-service caddy status")
+    echo -e "  ⚡ Caddy 前端状态: ${RED}${BOLD}● Failed (启动异常，输入 '$DIAG_CMD' 诊断)${NC}"
+fi
+
+if [ "$STATUS_BACKEND" = true ]; then
     echo -e "  ⚡ Proxy 后端状态: ${GREEN}${BOLD}● Running (正常运行)${NC}"
 else
     echo -e "  ⚡ Proxy 后端状态: ${RED}${BOLD}● Failed (启动异常)${NC}"
