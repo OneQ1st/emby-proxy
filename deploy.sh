@@ -35,7 +35,6 @@ fi
 # ==================== 0. 互动式功能选择 ====================
 echo -e "\n${BLUE}${BOLD}📊 请选择要执行的操作：${NC}"
 echo -e "  ${BOLD}1)${NC} ${GREEN}智能自检部署 / 更新环境${NC}"
-echo -e "  ${BOLD}1)${NC} ${GREEN}智能自检部署 / 更新环境${NC}"
 echo -e "  ${BOLD}2)${NC} ${RED}一键完全卸载 (清理服务与数据)${NC}"
 read -p " 请输入数字 [1/2]: " MAIN_CHOICE
 
