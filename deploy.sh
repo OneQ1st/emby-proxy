@@ -11,7 +11,7 @@ NC='\e[0m'
 
 clear
 echo -e "${BLUE}${BOLD}┌────────────────────────────────────────────────────────┐${NC}"
-echo -e "${BLUE}${BOLD}│  Emby-Proxy + Nginx 智能多轨部署脚本 (核心通路修复版)   │${NC}"
+echo -e "${BLUE}${BOLD}│  Emby-Proxy + Nginx 智能多轨部署脚本 (后缀精准重写版) │${NC}"
 echo -e "${BLUE}${BOLD}└────────────────────────────────────────────────────────┘${NC}"
 
 # ==================== 系统环境智能识别 ====================
@@ -418,7 +418,7 @@ NGINX_EOF1
 echo -e "${GREEN} ✔ [1/2] 通用配置 nginx-emby.conf 创建成功。${NC}"
 
 
-# 📦 配置 2：专属于 emos 的全量匹配重写配置 (nginx-emos.conf)
+# 📦 配置 2：专属于 emos 的精准无斜杠重写配置 (nginx-emos.conf)
 cat <<NGINX_EOF2 > "$NGINX_CONF_DIR/nginx-emos.conf"
 server {
     # 共享 HTTPS 端口与外部域名
@@ -432,22 +432,37 @@ server {
     ssl_ciphers HIGH:!aNULL:!MD5;
     ssl_prefer_server_ciphers on;
 
-    # =============== 核心路由规则: emos 模糊匹配全量重写路由 ================
-    location ^~ /emos {
-        # 统一将 /emos 后的所有路径子集完全捕获并无缝拼接给后端
-        rewrite ^/emos(.*)$ /https/video.emos.best/443\$1 break;
+    # =============== 核心路由规则: emos 精准无前置斜杠重写路由 ================
+    
+    # 规则 A: 匹配带子路径的场景 (例如 /emos/emby/System/Ping -> 转为 https/video.emos.best/443/emby/System/Ping)
+    location ^~ /emos/ {
+        rewrite ^/emos/(.*)$ https/video.emos.best/443/\$1 break;
         proxy_pass http://127.0.0.1:8080;
         
-        # 处理视频流状态码，透传 Range 头部
         proxy_buffering off;
         proxy_request_buffering off;
         proxy_max_temp_file_size 0;
 
-        # 增加核心头部 EMOS-PROXY-ID 和 NAME
         proxy_set_header EMOS-PROXY-ID "eD3VXZD9Ys";
         proxy_set_header EMOS-PROXY-NAME "@OneQ1st";
         
-        # 传递头部 X-FORWARDED-FOR 及其余常规头部
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header Host \$host;
+    }
+
+    # 规则 B: 完美的兜底匹配，防止只输入 /emos 时由于没有后面的斜杠而报错
+    location = /emos {
+        rewrite ^/emos$ https/video.emos.best/443/ break;
+        proxy_pass http://127.0.0.1:8080;
+        
+        proxy_buffering off;
+        proxy_request_buffering off;
+        proxy_max_temp_file_size 0;
+
+        proxy_set_header EMOS-PROXY-ID "eD3VXZD9Ys";
+        proxy_set_header EMOS-PROXY-NAME "@OneQ1st";
+        
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header Host \$host;
@@ -455,7 +470,8 @@ server {
 }
 NGINX_EOF2
 
-echo -e "${GREEN} ✔ [2/2] 全量重写修正版特殊配置 nginx-emos.conf 创建完成。${NC}"
+echo -e "${GREEN} ✔ [2/2] 精准去斜杠重写配置 nginx-emos.conf 创建完成。${NC}"
+
 
 # ==================== 6. 服务配置与最终检查 ====================
 if [ "$INIT_SYSTEM" = "systemd" ]; then
@@ -506,7 +522,7 @@ sleep 1.5
 
 # ==================== 7. 看板信息输出 ====================
 echo -e "\n${GREEN}${BOLD}┌────────────────────────────────────────────────────────┐${NC}"
-echo -e "${GREEN}${BOLD}│ 🎉 恭喜！双配置文件彻底解耦部署完成。                  │${NC}"
+echo -e "${GREEN}${BOLD}│ 🎉 恭喜！双配置文件全量路径重写部署完成。             │${NC}"
 echo -e "${GREEN}${BOLD}└────────────────────────────────────────────────────────┘${NC}"
 
 echo -e " ${BOLD}📊 [多轨服务运行状态看板]${NC}"
@@ -529,7 +545,7 @@ else
 fi
 
 if [ "$STATUS_NGINX" = true ]; then
-    echo -e "  ⚡ Nginx 前端状态: ${GREEN}${BOLD}● Running (双配置已安全载入并正常运行)${NC}"
+    echo -e "  ⚡ Nginx 前端状态: ${GREEN}${BOLD}● Running (配置已安全载入并正常运行)${NC}"
 else
     DIAG_CMD=$([ "$INIT_SYSTEM" = "systemd" ] && echo "journalctl -u nginx -n 20 --no-pager" || echo "rc-service nginx status")
     echo -e "  ⚡ Nginx 前端状态: ${RED}${BOLD}● Failed (启动异常，输入 '$DIAG_CMD' 诊断)${NC}"
