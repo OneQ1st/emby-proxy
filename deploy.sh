@@ -364,6 +364,10 @@ echo -e "${BLUE}─────────────────────�
 GLOBAL_BLOCK="email $MY_EMAIL
     http_port $HTTP_PORT
     https_port $HTTPS_PORT"
+    default_bind [::]
+    servers {
+        trusted_proxies static 0.0.0.0/0 ::/0
+        }
 
 if [ "$USE_EXISTING_CERT" = true ]; then
     cat <<CADDY_EOF > /opt/emby-proxy/Caddyfile
@@ -377,7 +381,7 @@ $DOMAIN:$DOMAIN_PORT {
     handle_path /emos* {
         rewrite * /https/video.emos.best/443{path}
         
-        reverse_proxy [::1]:8080 {
+        reverse_proxy localhost:8080 {
             header_up EMOS-PROXY-ID "eD3VXZD9Ys"
             header_up EMOS-PROXY-NAME "@OneQ1st"
             header_up X-Forwarded-For {remote_host}
@@ -388,7 +392,7 @@ $DOMAIN:$DOMAIN_PORT {
     }
     # 2. 通用路径：保持简单，不带上述多余限制
     handle {
-        reverse_proxy [::1]:8080 {
+        reverse_proxy localhost:8080 {
             header_up Host {host}
             header_up X-Real-IP {remote_host}
             flush_interval -1
@@ -410,7 +414,7 @@ $DOMAIN:$DOMAIN_PORT {
     handle_path /emos* {
         rewrite * /https/video.emos.best/443{path}
         
-        reverse_proxy [::1]:8080 {
+        reverse_proxy localhost:8080 {
             header_up EMOS-PROXY-ID "eD3VXZD9Ys"
             header_up EMOS-PROXY-NAME "@OneQ1st"
             header_up X-Forwarded-For {remote_host}
@@ -421,7 +425,7 @@ $DOMAIN:$DOMAIN_PORT {
     }
     # 2. 通用路径：保持简单，不带上述多余限制
     handle {
-        reverse_proxy [::1]:8080 {
+        reverse_proxy localhost:8080 {
             header_up Host {host}
             header_up X-Real-IP {remote_host}
             flush_interval -1
@@ -443,7 +447,7 @@ $DOMAIN:$DOMAIN_PORT {
     handle_path /emos* {
         rewrite * /https/video.emos.best/443{path}
         
-        reverse_proxy [::1]:8080 {
+        reverse_proxy localhost:8080 {
             header_up EMOS-PROXY-ID "eD3VXZD9Ys"
             header_up EMOS-PROXY-NAME "@OneQ1st"
             header_up X-Forwarded-For {remote_host}
@@ -454,7 +458,7 @@ $DOMAIN:$DOMAIN_PORT {
     }
     # 2. 通用路径：保持简单，不带上述多余限制
     handle {
-        reverse_proxy [::1]:8080 {
+        reverse_proxy localhost:8080 {
             header_up Host {host}
             header_up X-Real-IP {remote_host}
             flush_interval -1
