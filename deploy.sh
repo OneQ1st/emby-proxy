@@ -418,7 +418,7 @@ NGINX_EOF1
 echo -e "${GREEN} ✔ [1/2] 通用配置 nginx-emby.conf 创建成功。${NC}"
 
 
-# 📦 配置 2：专属于 emos 的纯净反代配置 (nginx-emos.conf)
+# 📦 配置 2：专属于 emos 的全量匹配重写配置 (nginx-emos.conf)
 cat <<NGINX_EOF2 > "$NGINX_CONF_DIR/nginx-emos.conf"
 server {
     # 共享 HTTPS 端口与外部域名
@@ -432,28 +432,9 @@ server {
     ssl_ciphers HIGH:!aNULL:!MD5;
     ssl_prefer_server_ciphers on;
 
-    # =============== 强制必要规则: 修复探针系统固定的 Ping 通路 ================
-    location = /emby/System/Ping {
-        # 必须重写至后端真实目的地址
-        rewrite ^(.*)$ /https/video.emos.best/443\$1 break;
-        proxy_pass http://127.0.0.1:8080;
-        
-        # 强制直连透传，关闭任何缓冲与缓存
-        proxy_buffering off;
-        proxy_cache off;
-
-        # 补全必须的核心头部
-        proxy_set_header EMOS-PROXY-ID "eD3VXZD9Ys";
-        proxy_set_header EMOS-PROXY-NAME "@OneQ1st";
-        
-        # 传递标准网络透传头部
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-    }
-
-    # =============== 核心路由规则: emos 特殊路由处理 ================
+    # =============== 核心路由规则: emos 模糊匹配全量重写路由 ================
     location ^~ /emos {
+        # 统一将 /emos 后的所有路径子集完全捕获并无缝拼接给后端
         rewrite ^/emos(.*)$ /https/video.emos.best/443\$1 break;
         proxy_pass http://127.0.0.1:8080;
         
@@ -474,8 +455,7 @@ server {
 }
 NGINX_EOF2
 
-echo -e "${GREEN} ✔ [2/2] 纯净修复版特殊配置 nginx-emos.conf 创建完成。${NC}"
-
+echo -e "${GREEN} ✔ [2/2] 全量重写修正版特殊配置 nginx-emos.conf 创建完成。${NC}"
 
 # ==================== 6. 服务配置与最终检查 ====================
 if [ "$INIT_SYSTEM" = "systemd" ]; then
