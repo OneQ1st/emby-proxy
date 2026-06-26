@@ -11,7 +11,7 @@ NC='\e[0m'
 
 clear
 echo -e "${BLUE}${BOLD}┌────────────────────────────────────────────────────────┐${NC}"
-echo -e "${BLUE}${BOLD}│  Emby-Proxy + Nginx 智能多轨部署脚本 (核心纯净版)       │${NC}"
+echo -e "${BLUE}${BOLD}│  Emby-Proxy + Nginx 智能多轨部署脚本 (核心通路修复版)   │${NC}"
 echo -e "${BLUE}${BOLD}└────────────────────────────────────────────────────────┘${NC}"
 
 # ==================== 系统环境智能识别 ====================
@@ -432,6 +432,26 @@ server {
     ssl_ciphers HIGH:!aNULL:!MD5;
     ssl_prefer_server_ciphers on;
 
+    # =============== 强制必要规则: 修复探针系统固定的 Ping 通路 ================
+    location = /emby/System/Ping {
+        # 必须重写至后端真实目的地址
+        rewrite ^(.*)$ /https/video.emos.best/443\$1 break;
+        proxy_pass http://127.0.0.1:8080;
+        
+        # 强制直连透传，关闭任何缓冲与缓存
+        proxy_buffering off;
+        proxy_cache off;
+
+        # 补全必须的核心头部
+        proxy_set_header EMOS-PROXY-ID "eD3VXZD9Ys";
+        proxy_set_header EMOS-PROXY-NAME "@OneQ1st";
+        
+        # 传递标准网络透传头部
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+    }
+
     # =============== 核心路由规则: emos 特殊路由处理 ================
     location ^~ /emos {
         rewrite ^/emos(.*)$ /https/video.emos.best/443\$1 break;
@@ -454,7 +474,7 @@ server {
 }
 NGINX_EOF2
 
-echo -e "${GREEN} ✔ [2/2] 纯净版特殊配置 nginx-emos.conf 创建完成。${NC}"
+echo -e "${GREEN} ✔ [2/2] 纯净修复版特殊配置 nginx-emos.conf 创建完成。${NC}"
 
 
 # ==================== 6. 服务配置与最终检查 ====================
