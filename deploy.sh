@@ -11,7 +11,7 @@ NC='\e[0m'
 
 clear
 echo -e "${BLUE}${BOLD}┌────────────────────────────────────────────────────────┐${NC}"
-echo -e "${BLUE}${BOLD}│  Emby-Proxy + Nginx 智能多轨部署脚本 (后缀精准重写版) │${NC}"
+echo -e "${BLUE}${BOLD}│  Emby-Proxy + Nginx 智能多轨部署脚本 (Caddy 1:1 复刻版) │${NC}"
 echo -e "${BLUE}${BOLD}└────────────────────────────────────────────────────────┘${NC}"
 
 # ==================== 系统环境智能识别 ====================
@@ -116,12 +116,10 @@ fi
 
 # ==================== 原部署逻辑开始 ====================
 
-# 创建完全符合 Linux FHS 规范的标准目录
 mkdir -p "$NGINX_CONF_DIR"
 mkdir -p /etc/ssl/emby-proxy
 mkdir -p /usr/local/bin
 
-# 检查命令是否存在的便捷函数
 check_cmd() {
     command -v "$1" >/dev/null 2>&1
 }
@@ -311,7 +309,6 @@ if [ "$USE_EXISTING_CERT" = false ]; then
     fi
 fi
 
-# 记录用户自定义端口
 read -p " 请输入域名(example.com)访问端口 (默认 443): " DOMAIN_PORT
 DOMAIN_PORT=${DOMAIN_PORT:-443}
 read -p " 请输入 HTTPS 监听端口 (默认 443): " HTTPS_PORT
@@ -369,11 +366,6 @@ echo -e "${BLUE}─────────────────────�
 
 # 📦 配置 1：通用纯净反代配置 (nginx-emby.conf)
 cat <<NGINX_EOF1 > "$NGINX_CONF_DIR/nginx-emby.conf"
-# 通用后端代理映射
-upstream emby-proxy {
-    server 127.0.0.1:8080;
-}
-
 # HTTP 重定向到 HTTPS
 server {
     listen $HTTP_PORT;
@@ -393,7 +385,7 @@ server {
     ssl_ciphers HIGH:!aNULL:!MD5;
     ssl_prefer_server_ciphers on;
 
-    # 干净的通用根访问控制，无缓存、无节流限制
+    # 1:1 复刻 Caddy 通用 handle 块逻辑
     location / {
         proxy_pass http://127.0.0.1:8080;
 
@@ -401,13 +393,11 @@ server {
         proxy_request_buffering off;
         proxy_max_temp_file_size 0;
 
-        proxy_set_header Host \$http_host;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_set_header X-Forwarded-Host \$http_host;
-        proxy_set_header X-Forwarded-Port \$server_port;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         
-        # websocket支持
+        # Websocket 支持
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "upgrade";
@@ -418,10 +408,9 @@ NGINX_EOF1
 echo -e "${GREEN} ✔ [1/2] 通用配置 nginx-emby.conf 创建成功。${NC}"
 
 
-# 📦 配置 2：专属于 emos 的精准无斜杠重写配置 (nginx-emos.conf)
+# 📦 配置 2：专属于 emos 的全量 1:1 复刻重写配置 (nginx-emos.conf)
 cat <<NGINX_EOF2 > "$NGINX_CONF_DIR/nginx-emos.conf"
 server {
-    # 共享 HTTPS 端口与外部域名
     listen $HTTPS_PORT ssl http2;
     server_name $DOMAIN;
 
@@ -432,45 +421,28 @@ server {
     ssl_ciphers HIGH:!aNULL:!MD5;
     ssl_prefer_server_ciphers on;
 
-    # =============== 核心路由规则: emos 精准无前置斜杠重写路由 ================
-    
-    # 规则 A: 匹配带子路径的场景 (例如 /emos/emby/System/Ping -> 转为 https/video.emos.best/443/emby/System/Ping)
-    location ^~ /emos/ {
-        rewrite ^/emos/(.*)$ https/video.emos.best/443/\$1 break;
+    # =============== 1:1 精准复刻 Caddy 的 handle_path /emos* 逻辑 ================
+    location ^~ /emos {
+        # 这一步等同于 Caddy 的 handle_path 剥离 + rewrite * /https/video.emos.best/443{path}
+        # 完美保留子路径前置斜杠，交给 8080 后端处理
+        rewrite ^/emos(.*)$ /https/video.emos.best/443\$1 break;
         proxy_pass http://127.0.0.1:8080;
         
         proxy_buffering off;
         proxy_request_buffering off;
         proxy_max_temp_file_size 0;
 
+        # 补全 Caddy reverse_proxy 块内的头信息
         proxy_set_header EMOS-PROXY-ID "eD3VXZD9Ys";
         proxy_set_header EMOS-PROXY-NAME "@OneQ1st";
-        
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header Host \$host;
-    }
-
-    # 规则 B: 完美的兜底匹配，防止只输入 /emos 时由于没有后面的斜杠而报错
-    location = /emos {
-        rewrite ^/emos$ https/video.emos.best/443/ break;
-        proxy_pass http://127.0.0.1:8080;
-        
-        proxy_buffering off;
-        proxy_request_buffering off;
-        proxy_max_temp_file_size 0;
-
-        proxy_set_header EMOS-PROXY-ID "eD3VXZD9Ys";
-        proxy_set_header EMOS-PROXY-NAME "@OneQ1st";
-        
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header Host \$host;
     }
 }
 NGINX_EOF2
 
-echo -e "${GREEN} ✔ [2/2] 精准去斜杠重写配置 nginx-emos.conf 创建完成。${NC}"
+echo -e "${GREEN} ✔ [2/2] Caddy 精准复刻版配置 nginx-emos.conf 创建完成。${NC}"
 
 
 # ==================== 6. 服务配置与最终检查 ====================
@@ -522,7 +494,7 @@ sleep 1.5
 
 # ==================== 7. 看板信息输出 ====================
 echo -e "\n${GREEN}${BOLD}┌────────────────────────────────────────────────────────┐${NC}"
-echo -e "${GREEN}${BOLD}│ 🎉 恭喜！双配置文件全量路径重写部署完成。             │${NC}"
+echo -e "${GREEN}${BOLD}│ 🎉 恭喜！对标 Caddy 逻辑的双配置脚本更新完成。          │${NC}"
 echo -e "${GREEN}${BOLD}└────────────────────────────────────────────────────────┘${NC}"
 
 echo -e " ${BOLD}📊 [多轨服务运行状态看板]${NC}"
@@ -545,7 +517,7 @@ else
 fi
 
 if [ "$STATUS_NGINX" = true ]; then
-    echo -e "  ⚡ Nginx 前端状态: ${GREEN}${BOLD}● Running (配置已安全载入并正常运行)${NC}"
+    echo -e "  ⚡ Nginx 前端状态: ${GREEN}${BOLD}● Running (双配置已完美对接运行)${NC}"
 else
     DIAG_CMD=$([ "$INIT_SYSTEM" = "systemd" ] && echo "journalctl -u nginx -n 20 --no-pager" || echo "rc-service nginx status")
     echo -e "  ⚡ Nginx 前端状态: ${RED}${BOLD}● Failed (启动异常，输入 '$DIAG_CMD' 诊断)${NC}"
