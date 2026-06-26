@@ -11,7 +11,7 @@ NC='\e[0m'
 
 clear
 echo -e "${BLUE}${BOLD}┌────────────────────────────────────────────────────────┐${NC}"
-echo -e "${BLUE}${BOLD}│  Emby-Proxy + Nginx 智能全自检部署脚本 (FHS 标准路径规范) │${NC}"
+echo -e "${BLUE}${BOLD}│  Emby-Proxy + Nginx 智能多轨部署脚本 (两套独立隔离配置) │${NC}"
 echo -e "${BLUE}${BOLD}└────────────────────────────────────────────────────────┘${NC}"
 
 # ==================== 系统环境智能识别 ====================
@@ -37,8 +37,8 @@ fi
 
 # ==================== 0. 互动式功能选择 ====================
 echo -e "\n${BLUE}${BOLD}📊 请选择要执行的操作：${NC}"
-echo -e "  ${BOLD}1)${NC} ${GREEN}智能自检部署 / 更新环境${NC}"
-echo -e "  ${BOLD}2)${NC} ${RED}一键完全卸载 (清理服务与数据)${NC}"
+echo -e "  ${BOLD}1)${NC} ${GREEN}智能双配置自检部署 / 更新环境${NC}"
+echo -e "  ${BOLD}2)${NC} ${RED}一键完全卸载 (清理服务与双配置数据)${NC}"
 read -p " 请输入数字 [1/2]: " MAIN_CHOICE
 
 # ----------------- 卸载逻辑分支 -----------------
@@ -78,13 +78,14 @@ if [ "$MAIN_CHOICE" == "2" ]; then
     fi
     echo -e "${GREEN} ✔ 系统服务配置清理完毕。${NC}"
 
-    echo -e "${YELLOW} ℹ 正在删除程序目录与配置文件 (标准路径)...${NC}"
+    echo -e "${YELLOW} ℹ 正在删除程序目录与双重配置文件 (标准路径)...${NC}"
     rm -f /usr/local/bin/emby-proxy
     rm -rf /etc/ssl/emby-proxy
     rm -f "$NGINX_CONF_DIR/nginx-emby.conf"
+    rm -f "$NGINX_CONF_DIR/nginx-emos.conf"
     $HOME/.acme.sh/acme.sh --uninstall >/dev/null 2>&1
     rm -rf $HOME/.acme.sh
-    echo -e "${GREEN} ✔ 部署目录（含证书、Nginx配置、二进制文件）已彻底删除。${NC}"
+    echo -e "${GREEN} ✔ 部署双目录（含证书、双Nginx配置、二进制文件）已彻底删除。${NC}"
 
     if [ "$OS_TYPE" = "debian" ]; then
         read -p " 是否同步卸载 Nginx 主程序？(y/n, 默认 n): " RM_NGINX_APT
@@ -104,7 +105,7 @@ if [ "$MAIN_CHOICE" == "2" ]; then
     fi
 
     echo -e "\n${GREEN}${BOLD}┌────────────────────────────────────────────────────────┐${NC}"
-    echo -e "${GREEN}${BOLD}│ 🎉 卸载完成！Emby-Proxy 相关服务及文件已彻底清理干净。 │${NC}"
+    echo -e "${GREEN}${BOLD}│ 🎉 卸载完成！所有相关服务及配置已彻底清理干净。         │${NC}"
     echo -e "${GREEN}${BOLD}└────────────────────────────────────────────────────────┘${NC}\n"
     exit 0
 
@@ -142,13 +143,13 @@ if [ ${#NEED_INSTALL[@]} -ne 0 ]; then
     if [ "$OS_TYPE" = "debian" ]; then
         apt update -y
         apt install -y curl tar wget git openssl jq psmisc socat || {
-            echo -e "${RED} ✖ [错误] 基础依赖安装失败！请检查系统网络或软件源。${NC}"
+            echo -e "${RED} ✖ [错误] 基础依赖安装失败！请检查系统网络或软件源. ${NC}"
             exit 1
         }
     else
         apk update
         apk add curl tar wget git openssl jq psmisc bash coreutils libc6-compat socat || {
-            echo -e "${RED} ✖ [错误] Alpine 基础依赖安装失败！请检查系统网络或软件源。${NC}"
+            echo -e "${RED} ✖ [错误] Alpine 基础依赖安装失败！请检查系统网络或软件源. ${NC}"
             exit 1
         }
     fi
@@ -178,7 +179,7 @@ fi
 
 
 # ==================== 3. 后端 Emby-Proxy 状态检查 ====================
-echo -e "\n${BLUE}${BOLD}▶ [步骤 3/5] 正在检查 Emby-Proxy 后端程序 (部署至标准路径 /usr/local/bin)...${NC}"
+echo -e "\n${BLUE}${BOLD}▶ [步骤 3/5] 正在检查 Emby-Proxy 后端程序...${NC}"
 echo -e "${BLUE}────────────────────────────────────────────────────────${NC}"
 ARCH=$(uname -m)
 BIN_FILE="/usr/local/bin/emby-proxy"
@@ -362,12 +363,13 @@ if [ "$USE_EXISTING_CERT" = false ]; then
 fi
 
 
-# ==================== 5. 动态生成完整 Nginx 配置文件 ====================
-echo -e "\n${BLUE}${BOLD}▶ [步骤 5/5] 正在动态生成 Nginx 配置文件 (注入自定义端口与通用配置)...${NC}"
+# ==================== 5. 动态生成 Nginx 双独立配置文件 ====================
+echo -e "\n${BLUE}${BOLD}▶ [步骤 5/5] 正在动态生成 Nginx 隔离配置 (nginx-emby.conf & nginx-emos.conf)...${NC}"
 echo -e "${BLUE}────────────────────────────────────────────────────────${NC}"
 
-cat <<NGINX_EOF > "$NGINX_CONF_DIR/nginx-emby.conf"
-# 构建本地代理映射池
+# 📦 配置 1：通用纯净反代配置 (nginx-emby.conf)
+cat <<NGINX_EOF1 > "$NGINX_CONF_DIR/nginx-emby.conf"
+# 通用后端代理映射
 upstream emby-proxy {
     server 127.0.0.1:8080;
 }
@@ -391,37 +393,19 @@ server {
     ssl_ciphers HIGH:!aNULL:!MD5;
     ssl_prefer_server_ciphers on;
 
-    # /emos 特殊处理路由保持原有配置
-    location ^~ /emos {
-        rewrite ^/emos(.*)$ /https/video.emos.best/443\$1 break;
-        proxy_pass http://emby-proxy;
-        
-        proxy_buffering off;
-        proxy_request_buffering off;
-        proxy_max_temp_file_size 0;
-
-        proxy_set_header EMOS-PROXY-ID "eD3VXZD9Ys";
-        proxy_set_header EMOS-PROXY-NAME "@OneQ1st";
-        proxy_set_header X-Forwarded-For \$remote_addr;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-    }
-
-    # 通用配置（带 WebSocket 及域名字段传递）
+    # 干净的通用根访问控制，无缓存、无节流限制
     location / {
-        # 注意此处可写 http://emby-proxy 从而走上游，也能写 127.0.0.1:8080，直接沿用你的配置逻辑
         proxy_pass http://127.0.0.1:8080;
 
-        # 同443端口配置
         proxy_buffering off;
         proxy_request_buffering off;
         proxy_max_temp_file_size 0;
 
-        # 必须传递域名信息，否则无法识别端口。所有 Nginx 变量已加入转义符保护
         proxy_set_header Host \$http_host;
         proxy_set_header X-Forwarded-Proto \$scheme;
         proxy_set_header X-Forwarded-Host \$http_host;
         proxy_set_header X-Forwarded-Port \$server_port;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         
         # websocket支持
         proxy_http_version 1.1;
@@ -429,9 +413,80 @@ server {
         proxy_set_header Connection "upgrade";
     }
 }
-NGINX_EOF
+NGINX_EOF1
 
-echo -e "${GREEN} ✔ nginx-emby.conf 动态生成并注入完毕。${NC}"
+echo -e "${GREEN} ✔ [1/2] 通用配置 nginx-emby.conf 创建成功。${NC}"
+
+
+# 📦 配置 2：专属于 emos 的高级特殊处理配置 (nginx-emos.conf)
+cat <<NGINX_EOF2 > "$NGINX_CONF_DIR/nginx-emos.conf"
+# 1. 定义全局缓存区域 (emos专属)
+proxy_cache_path /tmp/nginx_emos_cache levels=1:2 keys_zone=emos_cache:10m max_size=1g inactive=60m use_temp_path=off;
+
+# 2. 定义全局节流区域 (emos专属)
+limit_req_zone \$binary_remote_addr zone=emos_progress_limit:10m rate=1r/s;
+
+server {
+    # 共享 HTTPS 端口与外部域名
+    listen $HTTPS_PORT ssl http2;
+    server_name $DOMAIN;
+
+    ssl_certificate $CERT_FILE;
+    ssl_certificate_key $KEY_FILE;
+    
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
+
+    # =============== 专属优化 1: 缓存图片资源 ================
+    location ~* ^/emby/Items/.*/Images/.* {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_cache emos_cache;
+        proxy_cache_valid 200 302 24h;
+        proxy_cache_valid 404 1m;
+    }
+
+    # =============== 专属优化 2: 缓存系统 Ping ================
+    location = /emby/System/Ping {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_cache emos_cache;
+        proxy_cache_valid 200 1m;
+    }
+
+    # =============== 专属优化 3: 播放进度条汇报节流 ================
+    location /emby/Sessions/Playing/Progress {
+        limit_req zone=emos_progress_limit burst=5 nodelay;
+        proxy_pass http://127.0.0.1:8080;
+        
+        proxy_set_header Host \$http_host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+    }
+
+    # =============== 核心路由规则: emos 特殊路由处理 ================
+    location ^~ /emos {
+        rewrite ^/emos(.*)$ /https/video.emos.best/443\$1 break;
+        proxy_pass http://127.0.0.1:8080;
+        
+        # 必须处理 206 视频流状态码，透传 Range 头部
+        proxy_buffering off;
+        proxy_request_buffering off;
+        proxy_max_temp_file_size 0;
+
+        # 必须增加头部 EMOS-PROXY-ID 和 NAME
+        proxy_set_header EMOS-PROXY-ID "eD3VXZD9Ys";
+        proxy_set_header EMOS-PROXY-NAME "@OneQ1st";
+        
+        # 必须传递头部 X-FORWARDED-FOR 及其余常规头部
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header Host \$host;
+    }
+}
+NGINX_EOF2
+
+echo -e "${GREEN} ✔ [2/2] 高级特性隔离配置 nginx-emos.conf 创建成功。${NC}"
+
 
 # ==================== 6. 服务配置与最终检查 ====================
 if [ "$INIT_SYSTEM" = "systemd" ]; then
@@ -482,14 +537,15 @@ sleep 1.5
 
 # ==================== 7. 绚丽看板信息输出 ====================
 echo -e "\n${GREEN}${BOLD}┌────────────────────────────────────────────────────────┐${NC}"
-echo -e "${GREEN}${BOLD}│ 🎉 恭喜！部署完成，端口动态注入且依赖独立分离。        │${NC}"
+echo -e "${GREEN}${BOLD}│ 🎉 恭喜！双配置文件彻底解耦部署完成。                  │${NC}"
 echo -e "${GREEN}${BOLD}└────────────────────────────────────────────────────────┘${NC}"
 
-echo -e " ${BOLD}📊 [配置服务运行看板]${NC}"
+echo -e " ${BOLD}📊 [多轨服务运行状态看板]${NC}"
 echo -e " ────────────────────────────────────────────────────────"
-echo -e "  🌐 访问入口地址:  ${GREEN}${BOLD}https://$DOMAIN:$DOMAIN_PORT${NC}"
-echo -e "  📄 Nginx配置路径: ${BLUE}$NGINX_CONF_DIR/nginx-emby.conf${NC}"
-echo -e "  📂 程序执行路径:  ${BLUE}$BIN_FILE${NC}"
+echo -e "  🌐 统一访问域名:  ${GREEN}${BOLD}https://$DOMAIN:$DOMAIN_PORT${NC}"
+echo -e "  📄 纯净反代配置:  ${BLUE}$NGINX_CONF_DIR/nginx-emby.conf${NC}"
+echo -e "  📄 特殊优化配置:  ${PURPLE}$NGINX_CONF_DIR/nginx-emos.conf${NC}"
+echo -e "  📂 后端执行路径:  ${BLUE}$BIN_FILE${NC}"
 echo -e "  🔐 SSL证书存放处: ${BLUE}/etc/ssl/emby-proxy${NC}"
 
 STATUS_NGINX=false
@@ -504,7 +560,7 @@ else
 fi
 
 if [ "$STATUS_NGINX" = true ]; then
-    echo -e "  ⚡ Nginx 前端状态: ${GREEN}${BOLD}● Running (正常运行)${NC}"
+    echo -e "  ⚡ Nginx 前端状态: ${GREEN}${BOLD}● Running (双配置安全载入并正常运行)${NC}"
 else
     DIAG_CMD=$([ "$INIT_SYSTEM" = "systemd" ] && echo "journalctl -u nginx -n 20 --no-pager" || echo "rc-service nginx status")
     echo -e "  ⚡ Nginx 前端状态: ${RED}${BOLD}● Failed (启动异常，输入 '$DIAG_CMD' 诊断)${NC}"
