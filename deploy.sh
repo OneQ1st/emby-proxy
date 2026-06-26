@@ -455,10 +455,12 @@ $DOMAIN:$DOMAIN_PORT {
     # 2. 通用路径：保持简单，不带上述多余限制
     handle {
         reverse_proxy 127.0.0.1:8080 {
-            header_up Host {host}
-            header_up X-Real-IP {remote_host}
-            flush_interval -1
-        }
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+        flush_interval -1
+    }
     }
 }
 CADDY_EOF
