@@ -11,7 +11,7 @@ NC='\e[0m'
 
 clear
 echo -e "${BLUE}${BOLD}┌────────────────────────────────────────────────────────┐${NC}"
-echo -e "${BLUE}${BOLD}│  Emby-Proxy + Nginx 智能多轨部署脚本 (Caddy 1:1 复刻版) │${NC}"
+echo -e "${BLUE}${BOLD}│  Emby-Proxy + Nginx 智能多轨部署脚本 (强制变量重写版) │${NC}"
 echo -e "${BLUE}${BOLD}└────────────────────────────────────────────────────────┘${NC}"
 
 # ==================== 系统环境智能识别 ====================
@@ -408,7 +408,7 @@ NGINX_EOF1
 echo -e "${GREEN} ✔ [1/2] 通用配置 nginx-emby.conf 创建成功。${NC}"
 
 
-# 📦 配置 2：专属于 emos 的全量 1:1 复刻重写配置 (nginx-emos.conf)
+# 📦 配置 2：专属于 emos 的强制变量强制注入配置 (nginx-emos.conf)
 cat <<NGINX_EOF2 > "$NGINX_CONF_DIR/nginx-emos.conf"
 server {
     listen $HTTPS_PORT ssl http2;
@@ -421,28 +421,36 @@ server {
     ssl_ciphers HIGH:!aNULL:!MD5;
     ssl_prefer_server_ciphers on;
 
-    # =============== 1:1 精准复刻 Caddy 的 handle_path /emos* 逻辑 ================
+    # =============== 核心路由：通过强制变量映射复刻 Caddy handle_path 逻辑 ================
     location ^~ /emos {
-        # 这一步等同于 Caddy 的 handle_path 剥离 + rewrite * /https/video.emos.best/443{path}
-        # 完美保留子路径前置斜杠，交给 8080 后端处理
-        rewrite ^/emos(.*)$ /https/video.emos.best/443\$1 break;
-        proxy_pass http://127.0.0.1:8080;
+        # 捕获 /emos 后面的子路径（完美保留子路径开头的斜杠）
+        if (\$request_uri ~* ^/emos(.*)$) {
+            set \$new_request_uri /https/video.emos.best/443\$1;
+        }
+
+        # 挂载自定义变量，强制 Nginx 将重写后的最终完整路径喂给后端，阻断 Nginx 使用原始 URI 的机制
+        proxy_pass http://127.0.0.1:8080\$new_request_uri;
         
         proxy_buffering off;
         proxy_request_buffering off;
         proxy_max_temp_file_size 0;
 
-        # 补全 Caddy reverse_proxy 块内的头信息
+        # 补全 Caddy 头信息
         proxy_set_header EMOS-PROXY-ID "eD3VXZD9Ys";
         proxy_set_header EMOS-PROXY-NAME "@OneQ1st";
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
+
+        # Websocket 协议透传支持
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
     }
 }
 NGINX_EOF2
 
-echo -e "${GREEN} ✔ [2/2] Caddy 精准复刻版配置 nginx-emos.conf 创建完成。${NC}"
+echo -e "${GREEN} ✔ [2/2] 强制变量匹配版特殊配置 nginx-emos.conf 创建完成。${NC}"
 
 
 # ==================== 6. 服务配置与最终检查 ====================
@@ -494,7 +502,7 @@ sleep 1.5
 
 # ==================== 7. 看板信息输出 ====================
 echo -e "\n${GREEN}${BOLD}┌────────────────────────────────────────────────────────┐${NC}"
-echo -e "${GREEN}${BOLD}│ 🎉 恭喜！对标 Caddy 逻辑的双配置脚本更新完成。          │${NC}"
+echo -e "${GREEN}${BOLD}│ 🎉 恭喜！双配置强制变量投递版部署更新完成。             │${NC}"
 echo -e "${GREEN}${BOLD}└────────────────────────────────────────────────────────┘${NC}"
 
 echo -e " ${BOLD}📊 [多轨服务运行状态看板]${NC}"
@@ -517,7 +525,7 @@ else
 fi
 
 if [ "$STATUS_NGINX" = true ]; then
-    echo -e "  ⚡ Nginx 前端状态: ${GREEN}${BOLD}● Running (双配置已完美对接运行)${NC}"
+    echo -e "  ⚡ Nginx 前端状态: ${GREEN}${BOLD}● Running (双配置变量强制剥离已生效)${NC}"
 else
     DIAG_CMD=$([ "$INIT_SYSTEM" = "systemd" ] && echo "journalctl -u nginx -n 20 --no-pager" || echo "rc-service nginx status")
     echo -e "  ⚡ Nginx 前端状态: ${RED}${BOLD}● Failed (启动异常，输入 '$DIAG_CMD' 诊断)${NC}"
