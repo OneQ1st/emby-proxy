@@ -10,25 +10,28 @@ BOLD='\e[1m'
 NC='\e[0m'
 
 clear
-echo -e "${BLUE}${BOLD}┌──────────────────────────────────────────────────┐${NC}"
-echo -e "${BLUE}${BOLD}│  Emby-Proxy + Caddy(含CF插件) 智能全自检部署脚本 │${NC}"
-echo -e "${BLUE}${BOLD}└──────────────────────────────────────────────────┘${NC}"
+echo -e "${BLUE}${BOLD}┌────────────────────────────────────────────────────────┐${NC}"
+echo -e "${BLUE}${BOLD}│  Emby-Proxy + Nginx 智能全自检部署脚本 (FHS 标准路径规范) │${NC}"
+echo -e "${BLUE}${BOLD}└────────────────────────────────────────────────────────┘${NC}"
 
 # ==================== 系统环境智能识别 ====================
 if [ -f /etc/alpine-release ]; then
     OS_TYPE="alpine"
     INIT_SYSTEM="openrc"
+    NGINX_CONF_DIR="/etc/nginx/http.d"
 elif [ -f /etc/debian_version ] || [ -f /etc/lsb-release ]; then
     OS_TYPE="debian"
     INIT_SYSTEM="systemd"
+    NGINX_CONF_DIR="/etc/nginx/conf.d"
 else
-    # 兜底判断，尝试通过命令识别
     if command -v apk >/dev/null 2>&1; then
         OS_TYPE="alpine"
         INIT_SYSTEM="openrc"
+        NGINX_CONF_DIR="/etc/nginx/http.d"
     else
         OS_TYPE="debian"
         INIT_SYSTEM="systemd"
+        NGINX_CONF_DIR="/etc/nginx/conf.d"
     fi
 fi
 
@@ -40,7 +43,7 @@ read -p " 请输入数字 [1/2]: " MAIN_CHOICE
 
 # ----------------- 卸载逻辑分支 -----------------
 if [ "$MAIN_CHOICE" == "2" ]; then
-    echo -e "\n${YELLOW}${BOLD}⚠️  警告：该操作将停止并删除 Emby-Proxy 与 Caddy 服务，清空所有相关配置与证书！${NC}"
+    echo -e "\n${YELLOW}${BOLD}⚠️  警告：该操作将停止并删除 Emby-Proxy 与 Nginx 服务，清空所有相关配置与证书！${NC}"
     read -p " 确认要继续卸载吗？(y/n, 默认 n): " CONFIRM_UNINSTALL
     if [[ ! "$CONFIRM_UNINSTALL" =~ ^[Yy](es)?$ ]]; then
         echo -e "${GREEN} ℹ 已取消卸载操作。${NC}"
@@ -48,11 +51,10 @@ if [ "$MAIN_CHOICE" == "2" ]; then
     fi
 
     echo -e "\n${BLUE}${BOLD}▶ 正在清理系统服务...${NC}"
-    echo -e "${BLUE}──────────────────────────────────────────────────${NC}"
+    echo -e "${BLUE}────────────────────────────────────────────────────────${NC}"
     
-    # 1. 停止并禁用服务 (兼容 Systemd & OpenRC)
     if [ "$INIT_SYSTEM" = "systemd" ]; then
-        for svc in emby-backend caddy; do
+        for svc in emby-backend nginx; do
             if systemctl is-active --quiet "$svc" || systemctl is-enabled --quiet "$svc" 2>/dev/null; then
                 echo -e "${YELLOW} ℹ 正在停止并禁用服务: $svc...${NC}"
                 systemctl stop "$svc" >/dev/null 2>&1
@@ -60,11 +62,9 @@ if [ "$MAIN_CHOICE" == "2" ]; then
             fi
         done
         rm -f /etc/systemd/system/emby-backend.service
-        rm -f /etc/systemd/system/caddy.service
         systemctl daemon-reload
     else
-        # OpenRC 卸载逻辑
-        for svc in emby-backend caddy; do
+        for svc in emby-backend nginx; do
             if rc-service "$svc" status >/dev/null 2>&1; then
                 echo -e "${YELLOW} ℹ 正在停止服务: $svc...${NC}"
                 rc-service "$svc" stop >/dev/null 2>&1
@@ -78,29 +78,28 @@ if [ "$MAIN_CHOICE" == "2" ]; then
     fi
     echo -e "${GREEN} ✔ 系统服务配置清理完毕。${NC}"
 
-    # 3. 清理程序目录与配置文件
-    echo -e "${YELLOW} ℹ 正在删除程序目录与配置文件...${NC}"
-    rm -rf /opt/emby-proxy
-    rm -rf /etc/caddy
-    echo -e "${GREEN} ✔ 部署目录（含证书、Caddyfile）已彻底删除。${NC}"
+    echo -e "${YELLOW} ℹ 正在删除程序目录与配置文件 (标准路径)...${NC}"
+    rm -f /usr/local/bin/emby-proxy
+    rm -rf /etc/ssl/emby-proxy
+    rm -f "$NGINX_CONF_DIR/nginx-emby.conf"
+    $HOME/.acme.sh/acme.sh --uninstall >/dev/null 2>&1
+    rm -rf $HOME/.acme.sh
+    echo -e "${GREEN} ✔ 部署目录（含证书、Nginx配置、二进制文件）已彻底删除。${NC}"
 
-    # 4. 解除官方存储库或包（根据系统分别处理）
-    if [ "$OS_TYPE" = "debian" ] && [ -f "/etc/apt/sources.list.d/caddy-stable.list" ]; then
-        read -p " 是否同步卸载 Caddy 的 APT 软件源与主程序？(y/n, 默认 n): " RM_CADDY_APT
-        if [[ "$RM_CADDY_APT" =~ ^[Yy](es)?$ ]]; then
-            echo -e "${YELLOW} ℹ 正在卸载 Caddy 软件源及主程序...${NC}"
-            apt purge -y caddy >/dev/null 2>&1
-            rm -f /etc/apt/sources.list.d/caddy-stable.list
-            rm -f /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-            apt update -y >/dev/null 2>&1
-            echo -e "${GREEN} ✔ Caddy APT 源及主程序已卸载。${NC}"
+    if [ "$OS_TYPE" = "debian" ]; then
+        read -p " 是否同步卸载 Nginx 主程序？(y/n, 默认 n): " RM_NGINX_APT
+        if [[ "$RM_NGINX_APT" =~ ^[Yy](es)?$ ]]; then
+            echo -e "${YELLOW} ℹ 正在卸载 Nginx 主程序...${NC}"
+            apt purge -y nginx nginx-common >/dev/null 2>&1
+            apt autoremove -y >/dev/null 2>&1
+            echo -e "${GREEN} ✔ Nginx 主程序已卸载。${NC}"
         fi
     elif [ "$OS_TYPE" = "alpine" ]; then
-        read -p " 是否同步卸载通过 apk 安装的 Caddy 主程序？(y/n, 默认 n): " RM_CADDY_APK
-        if [[ "$RM_CADDY_APK" =~ ^[Yy](es)?$ ]]; then
-            echo -e "${YELLOW} ℹ 正在卸载 Caddy 主程序...${NC}"
-            apk del caddy >/dev/null 2>&1
-            echo -e "${GREEN} ✔ Caddy 主程序已卸载。${NC}"
+        read -p " 是否同步卸载 Nginx 主程序？(y/n, 默认 n): " RM_NGINX_APK
+        if [[ "$RM_NGINX_APK" =~ ^[Yy](es)?$ ]]; then
+            echo -e "${YELLOW} ℹ 正在卸载 Nginx 主程序...${NC}"
+            apk del nginx >/dev/null 2>&1
+            echo -e "${GREEN} ✔ Nginx 主程序已卸载。${NC}"
         fi
     fi
 
@@ -109,48 +108,47 @@ if [ "$MAIN_CHOICE" == "2" ]; then
     echo -e "${GREEN}${BOLD}└────────────────────────────────────────────────────────┘${NC}\n"
     exit 0
 
-# ----------------- 错误输入防御 -----------------
 elif [ "$MAIN_CHOICE" != "1" ]; then
     echo -e "${RED} ✖ [错误] 输入无效，脚本退出。${NC}"
     exit 1
 fi
 
 
-# ==================== 原部署逻辑开始（代码一律未动） ====================
+# ==================== 原部署逻辑开始 ====================
 
-# 创建标准目录（若不存在）
-mkdir -p /etc/caddy
-mkdir -p /opt/emby-proxy
-mkdir -p /opt/emby-proxy/ssl
+# 创建完全符合 Linux FHS 规范的标准目录
+mkdir -p "$NGINX_CONF_DIR"
+mkdir -p /etc/ssl/emby-proxy
+mkdir -p /usr/local/bin
 
 # 检查命令是否存在的便捷函数
 check_cmd() {
     command -v "$1" >/dev/null 2>&1
 }
 
-# ==================== 1. 基础依赖检查与环境补全 ====================
-echo -e "\n${BLUE}${BOLD}▶ [步骤 1/5] 正在检查系统基础依赖环境...${NC}"
-echo -e "${BLUE}──────────────────────────────────────────────────${NC}"
+
+# ==================== 1. 环境依赖安装 (完全独立执行块) ====================
+echo -e "\n${BLUE}${BOLD}▶ [步骤 1/5] 正在检查并独立安装系统基础依赖环境...${NC}"
+echo -e "${BLUE}────────────────────────────────────────────────────────${NC}"
 
 NEED_INSTALL=()
-for cmd in curl tar wget git openssl jq gpg; do
+for cmd in curl tar wget git openssl jq socat; do
     if ! check_cmd "$cmd"; then
         NEED_INSTALL+=("$cmd")
     fi
 done
 
 if [ ${#NEED_INSTALL[@]} -ne 0 ]; then
-    echo -e "${YELLOW} ℹ 发现缺失基础依赖: ${NEED_INSTALL[*]}，正在补充安装...${NC}"
+    echo -e "${YELLOW} ℹ 发现缺失基础依赖: ${NEED_INSTALL[*]}，正在独立执行补充安装...${NC}"
     if [ "$OS_TYPE" = "debian" ]; then
         apt update -y
-        apt install -y curl tar wget git openssl jq psmisc debian-keyring debian-archive-keyring apt-transport-https || {
+        apt install -y curl tar wget git openssl jq psmisc socat || {
             echo -e "${RED} ✖ [错误] 基础依赖安装失败！请检查系统网络或软件源。${NC}"
             exit 1
         }
     else
-        # Alpine Linux 依赖安装 (使用 apk 补全对应依赖，bash与libc兼容包提前引入)
         apk update
-        apk add curl tar wget git openssl jq psmisc bash coreutils libc6-compat || {
+        apk add curl tar wget git openssl jq psmisc bash coreutils libc6-compat socat || {
             echo -e "${RED} ✖ [错误] Alpine 基础依赖安装失败！请检查系统网络或软件源。${NC}"
             exit 1
         }
@@ -160,56 +158,34 @@ else
 fi
 
 
-# ==================== 2. Caddy 及其插件就绪状态检查 ====================
-echo -e "\n${BLUE}${BOLD}▶ [步骤 2/5] 正在检查 Caddy 服务及 Cloudflare 插件状态...${NC}"
-echo -e "${BLUE}──────────────────────────────────────────────────${NC}"
-CADDY_READY=false
+# ==================== 2. Nginx 就绪状态检查 ====================
+echo -e "\n${BLUE}${BOLD}▶ [步骤 2/5] 正在检查 Nginx 服务状态...${NC}"
+echo -e "${BLUE}────────────────────────────────────────────────────────${NC}"
 
-# 预先定位真实有效的 caddy 可执行路径
-CADDY_BIN="/usr/bin/caddy"
-if check_cmd "caddy"; then
-    CADDY_BIN=$(command -v caddy)
-    echo -e "${YELLOW} ℹ 检测到系统已安装 Caddy，正在校验 Cloudflare 插件...${NC}"
-    if "$CADDY_BIN" list-modules | grep -q "dns.providers.cloudflare"; then
-        echo -e "${GREEN} ✔ [已通过] 检测到完全符合要求的 Caddy (已集成 Cloudflare 插件)，跳过安装。${NC}"
-        CADDY_READY=true
+if ! check_cmd "nginx"; then
+    echo -e "${YELLOW} ℹ 未检测到 Nginx，正在自动安装...${NC}"
+    if [ "$OS_TYPE" = "debian" ]; then
+        apt update -y && apt install -y nginx || { echo -e "${RED} ✖ [错误] Nginx 安装失败！${NC}"; exit 1; }
     else
-        echo -e "${YELLOW} ℹ 提示：已安装 Caddy，但未检测到 cloudflare 插件。将为您在线热补丁集成...${NC}"
+        apk add nginx || { echo -e "${RED} ✖ [错误] Nginx 安装失败！${NC}"; exit 1; }
     fi
+    echo -e "${GREEN} ✔ Nginx 安装成功！${NC}"
+else
+    echo -e "${GREEN} ✔ [已通过] 检测到已安装 Nginx。${NC}"
 fi
 
-if [ "$CADDY_READY" = false ]; then
-    if ! check_cmd "caddy"; then
-        if [ "$OS_TYPE" = "debian" ]; then
-            echo -e "${YELLOW} ℹ 正在配置 Caddy 官方 APT 存储库...${NC}"
-            curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor --yes -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-            curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list
-            apt update -y && apt install -y caddy || { echo -e "${RED} ✖ [错误] 标准版 Caddy 安装失败！${NC}"; exit 1; }
-            CADDY_BIN="/usr/bin/caddy"
-        else
-            echo -e "${YELLOW} ℹ 正在通过 apk 安装官方 Caddy...${NC}"
-            apk add caddy || { echo -e "${RED} ✖ [错误] Alpine 标准版 Caddy 安装失败！${NC}"; exit 1; }
-            CADDY_BIN="/usr/sbin/caddy" # Alpine 默认路径常为 /usr/sbin/caddy
-            [ ! -f "$CADDY_BIN" ] && CADDY_BIN=$(command -v caddy)
-        fi
-    fi
-
-    echo -e "${YELLOW} ℹ 正在向 Caddy 注入 cloudflare 插件 (进程需要一分钟左右，请稍候)...${NC}"
-    "$CADDY_BIN" add-package github.com/caddy-dns/cloudflare || {
-        echo -e "${RED} ✖ [错误] 插件集成失败！请检查您的 VPS 到 github.com 的 network 状态。${NC}"
-        exit 1
-    }
-    echo -e "${GREEN} ✔ Caddy 及其插件环境配置成功！${NC}"
-fi
+[ -f /etc/nginx/sites-enabled/default ] && rm -f /etc/nginx/sites-enabled/default
+[ -f /etc/nginx/http.d/default.conf ] && rm -f /etc/nginx/http.d/default.conf
 
 
 # ==================== 3. 后端 Emby-Proxy 状态检查 ====================
-echo -e "\n${BLUE}${BOLD}▶ [步骤 3/5] 正在检查 Emby-Proxy 后端程序...${NC}"
-echo -e "${BLUE}──────────────────────────────────────────────────${NC}"
+echo -e "\n${BLUE}${BOLD}▶ [步骤 3/5] 正在检查 Emby-Proxy 后端程序 (部署至标准路径 /usr/local/bin)...${NC}"
+echo -e "${BLUE}────────────────────────────────────────────────────────${NC}"
 ARCH=$(uname -m)
+BIN_FILE="/usr/local/bin/emby-proxy"
 
-if [ -x "/opt/emby-proxy/emby-proxy" ]; then
-    echo -e "${GREEN} ✔ [已通过] 检测到 /opt/emby-proxy/emby-proxy 已存在且具备执行权限，跳过下载。${NC}"
+if [ -x "$BIN_FILE" ]; then
+    echo -e "${GREEN} ✔ [已通过] 检测到 $BIN_FILE 已存在且具备执行权限，跳过下载。${NC}"
 else
     echo -e "${YELLOW} ℹ 未检测到后端程序，正在识别架构并下载...${NC}"
     if [ "$ARCH" = "x86_64" ]; then
@@ -221,15 +197,15 @@ else
         exit 1
     fi
 
-    rm -f /opt/emby-proxy/emby-proxy
-    wget -O /opt/emby-proxy/emby-proxy "$EMBY_PROXY_URL" && chmod +x /opt/emby-proxy/emby-proxy
+    rm -f "$BIN_FILE"
+    wget -O "$BIN_FILE" "$EMBY_PROXY_URL" && chmod +x "$BIN_FILE"
     echo -e "${GREEN} ✔ 后端 emby-proxy 下载并授权成功。${NC}"
 fi
 
 
-# ==================== 4. 域名输入与证书智能扫描 ====================
-echo -e "\n${BLUE}${BOLD}▶ [步骤 4/5] 配置参数收集与现有证书扫描...${NC}"
-echo -e "${BLUE}──────────────────────────────────────────────────${NC}"
+# ==================== 4. 域名输入与证书智能扫描 / 申请 ====================
+echo -e "\n${BLUE}${BOLD}▶ [步骤 4/5] 配置参数收集与证书检查...${NC}"
+echo -e "${BLUE}────────────────────────────────────────────────────────${NC}"
 read -p " 请输入您的域名 (例如: example.com): " DOMAIN
 
 if [ -z "$DOMAIN" ]; then
@@ -237,9 +213,8 @@ if [ -z "$DOMAIN" ]; then
     exit 1
 fi
 
-# 证书目标路径
-CERT_FILE="/opt/emby-proxy/ssl/fullchain.pem"
-KEY_FILE="/opt/emby-proxy/ssl/privkey.pem"
+CERT_FILE="/etc/ssl/emby-proxy/fullchain.pem"
+KEY_FILE="/etc/ssl/emby-proxy/privkey.pem"
 
 POSSIBLE_CERTS=(
     "$CERT_FILE"
@@ -272,8 +247,8 @@ for idx in "${!POSSIBLE_CERTS[@]}"; do
         if openssl x509 -in "$cert_path" -noout -text 2>/dev/null | grep -q "$DOMAIN"; then
             echo -e "${GREEN} ✔ [匹配成功] 发现匹配域名的本地有效证书: $cert_path${NC}"
             if [ "$cert_path" != "$CERT_FILE" ]; then
-                ln -sf "$cert_path" "$CERT_FILE"
-                ln -sf "$key_path" "$KEY_FILE"
+                cp -f "$cert_path" "$CERT_FILE"
+                cp -f "$key_path" "$KEY_FILE"
             fi
             USE_EXISTING_CERT=true
             break
@@ -281,15 +256,14 @@ for idx in "${!POSSIBLE_CERTS[@]}"; do
     fi
 done
 
-# 未扫描到证书，进入增强回落交互（支持路径指定或纯文本粘贴）
 if [ "$USE_EXISTING_CERT" = false ]; then
-    echo -e "${YELLOW} ℹ 提示：未在系统常见路径下自动发现匹配域名 [$DOMAIN] 的本地证书。${NC}"
+    echo -e "${YELLOW} ℹ 提示：未自动发现本地证书。${NC}"
     read -p " 是否需要手动配置/粘贴 Cloudflare 源服务器证书？(y/n, 默认 n): " PROVIDE_CERT
     
     if [[ "$PROVIDE_CERT" =~ ^[Yy](es)?$ ]]; then
         echo -e "\n 请选择提供证书的方式:"
-        echo -e "  ${BOLD}1)${NC} 输入已有证书和私钥的【绝对文件路径】"
-        echo -e "  ${BOLD}2)${NC} 直接【手动粘贴】Cloudflare 源服务器证书/私钥文本内容"
+        echo -e "  ${BOLD}1)${NC} 输入绝对文件路径"
+        echo -e "  ${BOLD}2)${NC} 手动粘贴文本内容"
         read -p " 请选择 [1/2]: " CERT_INPUT_MODE
         
         if [ "$CERT_INPUT_MODE" == "1" ]; then
@@ -297,12 +271,12 @@ if [ "$USE_EXISTING_CERT" = false ]; then
             read -p " 请输入私钥完整路径 (privkey.pem 或 .key): " USER_KEY
             
             if [ -s "$USER_CERT" ] && [ -s "$USER_KEY" ]; then
-                ln -sf "$USER_CERT" "$CERT_FILE"
-                ln -sf "$USER_KEY" "$KEY_FILE"
-                echo -e "${GREEN} ✔ 自定义本地证书文件导入成功！${NC}"
+                cp -f "$USER_CERT" "$CERT_FILE"
+                cp -f "$USER_KEY" "$KEY_FILE"
+                echo -e "${GREEN} ✔ 自定义本地证书导入成功！${NC}"
                 USE_EXISTING_CERT=true
             else
-                echo -e "${RED} ✖ 输入的路径文件不存在或不可读，系统将退回到 Caddy 自动申请方案。${NC}"
+                echo -e "${RED} ✖ 文件不存在或不可读，系统将退回到 acme.sh 自动申请。${NC}"
             fi
             
         elif [ "$CERT_INPUT_MODE" == "2" ]; then
@@ -326,158 +300,148 @@ if [ "$USE_EXISTING_CERT" = false ]; then
                 echo "$line" >> "$KEY_FILE"
             done
             
-            # 校验粘贴内容的合法性
             if [ -s "$CERT_FILE" ] && [ -s "$KEY_FILE" ] && openssl x509 -in "$CERT_FILE" -noout >/dev/null 2>&1; then
-                echo -e "${GREEN} ✔ 粘贴的 Cloudflare 源服务器证书及私钥解析并保存成功！${NC}"
+                echo -e "${GREEN} ✔ 粘贴证书保存成功！${NC}"
                 USE_EXISTING_CERT=true
             else
-                echo -e "${RED} ✖ 证书解析失败（可能复制不全或格式错误），系统将退回到 Caddy 自动申请方案。${NC}"
+                echo -e "${RED} ✖ 证书解析失败，系统将退回到 acme.sh 自动申请。${NC}"
                 rm -f "$CERT_FILE" "$KEY_FILE"
             fi
-        else
-            echo -e "${RED} ✖ 输入错误，退回到自动申请方案。${NC}"
         fi
     fi
 fi
 
-# 其余运行参数收集
 read -p " 请输入域名(example.com)访问端口 (默认 443): " DOMAIN_PORT
 DOMAIN_PORT=${DOMAIN_PORT:-443}
 read -p " 请输入 HTTPS 监听端口 (默认 443): " HTTPS_PORT
 HTTPS_PORT=${HTTPS_PORT:-443}
-read -p " 请输入 HTTP 默认端口 (若 80 被占用可自定义修改，默认 80): " HTTP_PORT
+read -p " 请输入 HTTP 默认端口 (默认 80): " HTTP_PORT
 HTTP_PORT=${HTTP_PORT:-80}
-read -p " 请输入邮箱 (用于自动化证书申请/续期通知): " MY_EMAIL
 
 if [ "$USE_EXISTING_CERT" = false ]; then
-    echo -e "\n 请选择 Caddy 证书申请验证方式:"
+    read -p " 请输入邮箱 (用于自动证书申请注册): " MY_EMAIL
+    echo -e "\n 请选择自动证书申请验证方式:"
     echo -e "  ${BOLD}1)${NC} Cloudflare DNS 挑战 (${PURPLE}推荐，无需开放 80 端口${NC})"
-    echo -e "  ${BOLD}2)${NC} HTTP 自动挑战 (请确保上述指定的 HTTP 端口能接收外部 80 端口的流量)"
+    echo -e "  ${BOLD}2)${NC} HTTP 独立挑战 (请确保 80 端口空闲且对外开放)"
     read -p " 选择 [1/2]: " AUTH_MODE
-fi
 
+    if [ ! -d "$HOME/.acme.sh" ]; then
+        echo -e "${YELLOW} ℹ 正在安装 acme.sh...${NC}"
+        curl -s https://get.acme.sh | sh -s email="$MY_EMAIL" >/dev/null 2>&1
+    fi
+    
+    ACME_BIN="$HOME/.acme.sh/acme.sh"
+    $ACME_BIN --set-default-ca --server letsencrypt >/dev/null 2>&1
 
-# ==================== 5. 动态生成符合规范的 Caddyfile ====================
-echo -e "\n${BLUE}${BOLD}▶ [步骤 5/5] 正在生成全局标准化 Caddyfile 配置...${NC}"
-echo -e "${BLUE}──────────────────────────────────────────────────${NC}"
+    if [ "$INIT_SYSTEM" = "systemd" ]; then
+        systemctl stop nginx >/dev/null 2>&1
+    else
+        rc-service nginx stop >/dev/null 2>&1
+    fi
 
-GLOBAL_BLOCK="email $MY_EMAIL
-    http_port $HTTP_PORT
-    https_port $HTTPS_PORT"
-
-if [ "$USE_EXISTING_CERT" = true ]; then
-    cat <<CADDY_EOF > /opt/emby-proxy/Caddyfile
-{
-    $GLOBAL_BLOCK
-}
-
-$DOMAIN:$DOMAIN_PORT {
-    tls $CERT_FILE $KEY_FILE
-
-    handle_path /emos* {
-        rewrite * /https/video.emos.best/443{path}
-        
-        reverse_proxy 127.0.0.1:8080 {
-            header_up EMOS-PROXY-ID "eD3VXZD9Ys"
-            header_up EMOS-PROXY-NAME "@OneQ1st"
-            header_up X-Forwarded-For {remote_host}
-            header_up Host {host}
-            header_up X-Real-IP {remote_host}
-            flush_interval -1
-        }
-    }
-    # 2. 通用路径：保持简单，不带上述多余限制
-    handle {
-        reverse_proxy 127.0.0.1:8080 {
-            header_up Host {host}
-            header_up X-Real-IP {remote_host}
-            flush_interval -1
-        }
-    }
-}
-CADDY_EOF
-
-else
     if [ "$AUTH_MODE" == "1" ]; then
         read -p " 请输入 Cloudflare API Token (需具备该域名 DNS:Edit 权限): " CF_TOKEN
-        cat <<CADDY_EOF > /opt/emby-proxy/Caddyfile
-{
-    $GLOBAL_BLOCK
-    acme_dns cloudflare $CF_TOKEN
-}
-
-$DOMAIN:$DOMAIN_PORT {
-    handle_path /emos* {
-        rewrite * /https/video.emos.best/443{path}
-        
-        reverse_proxy 127.0.0.1:8080 {
-            header_up EMOS-PROXY-ID "eD3VXZD9Ys"
-            header_up EMOS-PROXY-NAME "@OneQ1st"
-            header_up X-Forwarded-For {remote_host}
-            header_up Host {host}
-            header_up X-Real-IP {remote_host}
-            flush_interval -1
-        }
-    }
-    # 2. 通用路径：保持简单，不带上述多余限制
-    handle {
-        reverse_proxy 127.0.0.1:8080 {
-            header_up Host {host}
-            header_up X-Real-IP {remote_host}
-            flush_interval -1
-        }
-    }
-}
-CADDY_EOF
+        export CF_Token="$CF_TOKEN"
+        echo -e "${YELLOW} ℹ 正在通过 DNS API 申请证书...${NC}"
+        $ACME_BIN --issue --dns dns_cf -d "$DOMAIN"
     else
-        cat <<CADDY_EOF > /opt/emby-proxy/Caddyfile
-{
-    $GLOBAL_BLOCK
-}
+        echo -e "${YELLOW} ℹ 正在通过 Standalone HTTP 申请证书...${NC}"
+        $ACME_BIN --issue --standalone -d "$DOMAIN" --httpport 80
+    fi
 
-$DOMAIN:$DOMAIN_PORT {
-    tls {
-        acme_ca https://acme-v02.api.letsencrypt.org/directory
-    }
-
-    handle_path /emos* {
-        rewrite * /https/video.emos.best/443{path}
-        
-        reverse_proxy 127.0.0.1:8080 {
-            header_up EMOS-PROXY-ID "eD3VXZD9Ys"
-            header_up EMOS-PROXY-NAME "@OneQ1st"
-            header_up X-Forwarded-For {remote_host}
-            header_up Host {host}
-            header_up X-Real-IP {remote_host}
-            flush_interval -1
-        }
-    }
-    # 2. 通用路径：保持简单，不带上述多余限制
-    handle {
-        reverse_proxy 127.0.0.1:8080 {
-            header_up Host {host}
-            header_up X-Real-IP {remote_host}
-            flush_interval -1
-        }
-    }
-}
-CADDY_EOF
+    $ACME_BIN --install-cert -d "$DOMAIN" \
+        --key-file "$KEY_FILE" \
+        --fullchain-file "$CERT_FILE"
+    
+    if [ -s "$CERT_FILE" ]; then
+        echo -e "${GREEN} ✔ 证书自动申请并安装成功！${NC}"
+    else
+        echo -e "${RED} ✖ 证书申请失败，请检查网络、DNS 解析或 API Token 后重试。${NC}"
+        exit 1
     fi
 fi
 
 
+# ==================== 5. 动态生成完整 Nginx 配置文件 ====================
+echo -e "\n${BLUE}${BOLD}▶ [步骤 5/5] 正在生成完整 nginx-emby.conf 配置 (目标路径: $NGINX_CONF_DIR)...${NC}"
+echo -e "${BLUE}────────────────────────────────────────────────────────${NC}"
+
+cat <<NGINX_EOF > "$NGINX_CONF_DIR/nginx-emby.conf"
+# 构建本地代理映射池，使 http://emby-proxy 正常解析到后端
+upstream emby-proxy {
+    server 127.0.0.1:8080;
+}
+
+# HTTP 重定向到 HTTPS
+server {
+    listen $HTTP_PORT;
+    server_name $DOMAIN;
+    return 301 https://\$host:$DOMAIN_PORT\$request_uri;
+}
+
+# HTTPS 主服务配置
+server {
+    listen $HTTPS_PORT ssl http2;
+    server_name $DOMAIN;
+
+    ssl_certificate $CERT_FILE;
+    ssl_certificate_key $KEY_FILE;
+    
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
+
+    # /emos 特殊处理路由保持原有配置
+    location ^~ /emos {
+        rewrite ^/emos(.*)$ /https/video.emos.best/443\$1 break;
+        proxy_pass http://emby-proxy;
+        
+        proxy_buffering off;
+        proxy_request_buffering off;
+        proxy_max_temp_file_size 0;
+
+        proxy_set_header EMOS-PROXY-ID "eD3VXZD9Ys";
+        proxy_set_header EMOS-PROXY-NAME "@OneQ1st";
+        proxy_set_header X-Forwarded-For \$remote_addr;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+    }
+
+    # 您要求的标准根目录块，完全植入
+    location / {
+        proxy_pass http://emby-proxy:8080;
+
+        # 同443端口配置
+        proxy_buffering off;
+        proxy_request_buffering off;
+        proxy_max_temp_file_size 0;
+
+        # 必须传递域名信息，否则无法识别端口
+        proxy_set_header Host \$http_host;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Forwarded-Host \$http_host;
+        proxy_set_header X-Forwarded-Port \$server_port;
+        
+        # websocket支持
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
+}
+NGINX_EOF
+
+echo -e "${GREEN} ✔ nginx-emby.conf 生成完毕。${NC}"
+
 # ==================== 6. 服务配置与最终检查 (分流 Systemd 与 OpenRC) ====================
 if [ "$INIT_SYSTEM" = "systemd" ]; then
-    # ---------- Debian / Ubuntu Systemd 托管 ----------
-    # 后端 Systemd
     cat <<SVC_EOF > /etc/systemd/system/emby-backend.service
 [Unit]
 Description=Emby Proxy Backend
 After=network.target
 
 [Service]
-WorkingDirectory=/opt/emby-proxy
-ExecStart=/opt/emby-proxy/emby-proxy
+WorkingDirectory=/usr/local/bin
+ExecStart=/usr/local/bin/emby-proxy
 Restart=always
 RestartSec=5
 
@@ -485,45 +449,18 @@ RestartSec=5
 WantedBy=multi-user.target
 SVC_EOF
 
-    # 前端 Systemd
-    cat <<SVC_EOF > /etc/systemd/system/caddy.service
-[Unit]
-Description=Caddy
-Documentation=https://caddyserver.com/docs/
-After=network.target network-online.target
-Requires=network-online.target
-
-[Service]
-Type=notify
-User=root
-Group=root
-ExecStart=$CADDY_BIN run --environ --config /opt/emby-proxy/Caddyfile
-ExecReload=$CADDY_BIN reload --config /opt/emby-proxy/Caddyfile --force
-TimeoutStopSec=5s
-LimitNOFILE=1048576
-LimitNPROC=512
-PrivateTmp=true
-ProtectSystem=full
-AmbientCapabilities=CAP_NET_BIND_SERVICE
-
-[Install]
-WantedBy=multi-user.target
-SVC_EOF
-
-    # 服务加载与重启
     systemctl daemon-reload
-    systemctl enable --now emby-backend caddy >/dev/null 2>&1
-    systemctl restart emby-backend caddy >/dev/null 2>&1
+    systemctl enable --now emby-backend >/dev/null 2>&1
+    systemctl enable --now nginx >/dev/null 2>&1
+    systemctl restart emby-backend nginx >/dev/null 2>&1
 
 else
-    # ---------- Alpine Linux OpenRC 托管 ----------
-    # 后端 OpenRC 脚本
     cat <<'OPENRC_EOF' > /etc/init.d/emby-backend
 #!/sbin/openrc-run
 description="Emby Proxy Backend"
 supervisor="supervise-daemon"
-command="/opt/emby-proxy/emby-proxy"
-directory="/opt/emby-proxy"
+command="/usr/local/bin/emby-proxy"
+directory="/usr/local/bin"
 respawn_delay=5
 respawn_max=0
 
@@ -534,58 +471,42 @@ depend() {
 OPENRC_EOF
     chmod +x /etc/init.d/emby-backend
 
-    # 前端 OpenRC 脚本
-    cat <<OPENRC_EOF > /etc/init.d/caddy
-#!/sbin/openrc-run
-description="Caddy Web Server"
-supervisor="supervise-daemon"
-command="$CADDY_BIN"
-command_args="run --config /opt/emby-proxy/Caddyfile"
-directory="/opt/emby-proxy"
-
-depend() {
-    need net
-    after firewall
-}
-OPENRC_EOF
-    chmod +x /etc/init.d/caddy
-
-    # 服务加载与重启
     rc-update add emby-backend default >/dev/null 2>&1
-    rc-update add caddy default >/dev/null 2>&1
+    rc-update add nginx default >/dev/null 2>&1
     rc-service emby-backend restart >/dev/null 2>&1
-    rc-service caddy restart >/dev/null 2>&1
+    rc-service nginx restart >/dev/null 2>&1
 fi
 
 sleep 1.5
 
 # ==================== 7. 绚丽看板信息输出 ====================
 echo -e "\n${GREEN}${BOLD}┌────────────────────────────────────────────────────────┐${NC}"
-echo -e "${GREEN}${BOLD}│ 🎉 恭喜！智能全自检运行成功，标准路径部署完毕。        │${NC}"
+echo -e "${GREEN}${BOLD}│ 🎉 恭喜！智能全自检运行成功，Nginx 部署已严格贴合 FHS。│${NC}"
 echo -e "${GREEN}${BOLD}└────────────────────────────────────────────────────────┘${NC}"
 
 echo -e " ${BOLD}📊 [配置服务运行看板]${NC}"
 echo -e " ────────────────────────────────────────────────────────"
 echo -e "  🌐 访问入口地址:  ${GREEN}${BOLD}https://$DOMAIN:$DOMAIN_PORT${NC}"
-echo -e "  📄 Caddy配置路径:  ${BLUE}/opt/emby-proxy/Caddyfile${NC}"
+echo -e "  📄 Nginx配置路径: ${BLUE}$NGINX_CONF_DIR/nginx-emby.conf${NC}"
+echo -e "  📂 程序执行路径:  ${BLUE}$BIN_FILE${NC}"
+echo -e "  🔐 SSL证书存放处: ${BLUE}/etc/ssl/emby-proxy${NC}"
 
-# 跨系统服务运行状态校验
-STATUS_CADDY=false
+STATUS_NGINX=false
 STATUS_BACKEND=false
 
 if [ "$INIT_SYSTEM" = "systemd" ]; then
-    systemctl is-active --quiet caddy && STATUS_CADDY=true
+    systemctl is-active --quiet nginx && STATUS_NGINX=true
     systemctl is-active --quiet emby-backend && STATUS_BACKEND=true
 else
-    rc-service caddy status >/dev/null 2>&1 && STATUS_CADDY=true
+    rc-service nginx status >/dev/null 2>&1 && STATUS_NGINX=true
     rc-service emby-backend status >/dev/null 2>&1 && STATUS_BACKEND=true
 fi
 
-if [ "$STATUS_CADDY" = true ]; then
-    echo -e "  ⚡ Caddy 前端状态: ${GREEN}${BOLD}● Running (正常运行)${NC}"
+if [ "$STATUS_NGINX" = true ]; then
+    echo -e "  ⚡ Nginx 前端状态: ${GREEN}${BOLD}● Running (正常运行)${NC}"
 else
-    DIAG_CMD=$([ "$INIT_SYSTEM" = "systemd" ] && echo "journalctl -u caddy" || echo "rc-service caddy status")
-    echo -e "  ⚡ Caddy 前端状态: ${RED}${BOLD}● Failed (启动异常，输入 '$DIAG_CMD' 诊断)${NC}"
+    DIAG_CMD=$([ "$INIT_SYSTEM" = "systemd" ] && echo "journalctl -u nginx" || echo "rc-service nginx status")
+    echo -e "  ⚡ Nginx 前端状态: ${RED}${BOLD}● Failed (启动异常，输入 '$DIAG_CMD' 诊断)${NC}"
 fi
 
 if [ "$STATUS_BACKEND" = true ]; then
