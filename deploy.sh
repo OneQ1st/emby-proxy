@@ -113,7 +113,6 @@ elif [ "$MAIN_CHOICE" != "1" ]; then
     exit 1
 fi
 
-
 # ==================== 原部署逻辑开始 ====================
 
 # 创建完全符合 Linux FHS 规范的标准目录
@@ -127,7 +126,7 @@ check_cmd() {
 }
 
 
-# ==================== 1. 环境依赖安装 (完全独立执行块) ====================
+# ==================== 1. 环境依赖独立安装区 ====================
 echo -e "\n${BLUE}${BOLD}▶ [步骤 1/5] 正在检查并独立安装系统基础依赖环境...${NC}"
 echo -e "${BLUE}────────────────────────────────────────────────────────${NC}"
 
@@ -311,6 +310,7 @@ if [ "$USE_EXISTING_CERT" = false ]; then
     fi
 fi
 
+# 记录用户自定义端口
 read -p " 请输入域名(example.com)访问端口 (默认 443): " DOMAIN_PORT
 DOMAIN_PORT=${DOMAIN_PORT:-443}
 read -p " 请输入 HTTPS 监听端口 (默认 443): " HTTPS_PORT
@@ -363,11 +363,11 @@ fi
 
 
 # ==================== 5. 动态生成完整 Nginx 配置文件 ====================
-echo -e "\n${BLUE}${BOLD}▶ [步骤 5/5] 正在生成完整 nginx-emby.conf 配置 (目标路径: $NGINX_CONF_DIR)...${NC}"
+echo -e "\n${BLUE}${BOLD}▶ [步骤 5/5] 正在动态生成 Nginx 配置文件 (注入自定义端口与通用配置)...${NC}"
 echo -e "${BLUE}────────────────────────────────────────────────────────${NC}"
 
 cat <<NGINX_EOF > "$NGINX_CONF_DIR/nginx-emby.conf"
-# 构建本地代理映射池，使 http://emby-proxy 正常解析到后端
+# 构建本地代理映射池
 upstream emby-proxy {
     server 127.0.0.1:8080;
 }
@@ -407,16 +407,17 @@ server {
         proxy_set_header X-Real-IP \$remote_addr;
     }
 
-    # 您要求的标准根目录块，完全植入
+    # 通用配置（带 WebSocket 及域名字段传递）
     location / {
-        proxy_pass http://emby-proxy:8080;
+        # 注意此处可写 http://emby-proxy 从而走上游，也能写 127.0.0.1:8080，直接沿用你的配置逻辑
+        proxy_pass http://127.0.0.1:8080;
 
         # 同443端口配置
         proxy_buffering off;
         proxy_request_buffering off;
         proxy_max_temp_file_size 0;
 
-        # 必须传递域名信息，否则无法识别端口
+        # 必须传递域名信息，否则无法识别端口。所有 Nginx 变量已加入转义符保护
         proxy_set_header Host \$http_host;
         proxy_set_header X-Forwarded-Proto \$scheme;
         proxy_set_header X-Forwarded-Host \$http_host;
@@ -430,9 +431,9 @@ server {
 }
 NGINX_EOF
 
-echo -e "${GREEN} ✔ nginx-emby.conf 生成完毕。${NC}"
+echo -e "${GREEN} ✔ nginx-emby.conf 动态生成并注入完毕。${NC}"
 
-# ==================== 6. 服务配置与最终检查 (分流 Systemd 与 OpenRC) ====================
+# ==================== 6. 服务配置与最终检查 ====================
 if [ "$INIT_SYSTEM" = "systemd" ]; then
     cat <<SVC_EOF > /etc/systemd/system/emby-backend.service
 [Unit]
@@ -481,7 +482,7 @@ sleep 1.5
 
 # ==================== 7. 绚丽看板信息输出 ====================
 echo -e "\n${GREEN}${BOLD}┌────────────────────────────────────────────────────────┐${NC}"
-echo -e "${GREEN}${BOLD}│ 🎉 恭喜！智能全自检运行成功，Nginx 部署已严格贴合 FHS。│${NC}"
+echo -e "${GREEN}${BOLD}│ 🎉 恭喜！部署完成，端口动态注入且依赖独立分离。        │${NC}"
 echo -e "${GREEN}${BOLD}└────────────────────────────────────────────────────────┘${NC}"
 
 echo -e " ${BOLD}📊 [配置服务运行看板]${NC}"
@@ -505,7 +506,7 @@ fi
 if [ "$STATUS_NGINX" = true ]; then
     echo -e "  ⚡ Nginx 前端状态: ${GREEN}${BOLD}● Running (正常运行)${NC}"
 else
-    DIAG_CMD=$([ "$INIT_SYSTEM" = "systemd" ] && echo "journalctl -u nginx" || echo "rc-service nginx status")
+    DIAG_CMD=$([ "$INIT_SYSTEM" = "systemd" ] && echo "journalctl -u nginx -n 20 --no-pager" || echo "rc-service nginx status")
     echo -e "  ⚡ Nginx 前端状态: ${RED}${BOLD}● Failed (启动异常，输入 '$DIAG_CMD' 诊断)${NC}"
 fi
 
