@@ -52,3 +52,33 @@ http {
     include /etc/nginx/http.d/*.conf;
 }
 ```
+```
+   resolver 8.8.8.8 1.1.1.1 valid=300s;
+    resolver_timeout 5s;
+    # 基础代理优化
+    proxy_http_version 1.1;
+    proxy_set_header Connection "";
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    location /emos/ {
+        # 1. 核心：代理到视频服
+        proxy_pass https://video.emos.best/;
+        # 2. 【关键】强制 TLS 握手域名匹配 (SNI)
+        proxy_ssl_server_name on;
+        proxy_ssl_name video.emos.best;
+        # 3. 欺骗 Host 头，让后端认为直接访问它
+        proxy_set_header Host video.emos.best;
+        # 4. 注入你要求的 Header
+        proxy_set_header EMOS-PROXY-ID "eD3VXZD9Ys";
+        proxy_set_header EMOS-PROXY-NAME "@OneQ1st";
+        # 5. 路径重写：去掉 /emby 前缀
+        rewrite ^/emos/(.*)$ /$1 break;
+        # 6. SSL 证书校验 (若对方是合规证书则开启)
+        proxy_ssl_verify off;
+    }
+    location / {
+        # 普通访问直接转发，不带上述 EMOS 特有 Header
+        proxy_pass http://127.0.0.1:8080;
+    }
+}
+```
