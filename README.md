@@ -1,7 +1,6 @@
 ```
-wget -O deploy.sh https://raw.githubusercontent.com/OneQ1st/emby-proxy/main/deploy.sh
-chmod +x deploy.sh
-./deploy.sh
+wget -O deploy.sh https://raw.githubusercontent.com/OneQ1st/emby-proxy/main/deploy.sh && chmod +x deploy.sh && ./deploy.sh
+
 ```
 Alpine下需修改nginx.conf才能使用nginx ui面板
 ```
