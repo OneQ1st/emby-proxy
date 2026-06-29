@@ -21,7 +21,7 @@ install_emby_proxy() {
 Description=Emby Proxy Service
 After=network.target
 [Service]
-ExecStart=$INSTALL_DIR/emby-proxy
+ExecStart=$INSTALL_DIR/emby-proxy --config /etc/emby-proxy/config.json
 WorkingDirectory=$INSTALL_DIR
 Restart=always
 User=root
@@ -30,17 +30,22 @@ WantedBy=multi-user.target
 EOF
         systemctl daemon-reload && systemctl enable --now $SERVICE_NAME
     else
+        # 优化后的 OpenRC 脚本
         cat <<EOF > /etc/init.d/$SERVICE_NAME
 #!/sbin/openrc-run
 name="$SERVICE_NAME"
+description="Emby Proxy Service"
 command="$INSTALL_DIR/emby-proxy"
-command_background=true
+command_args="--config /etc/emby-proxy/config.json"
+directory="$INSTALL_DIR"
+supervisor="supervise-daemon"
 pidfile="/run/$SERVICE_NAME.pid"
+
 depend() { need net; }
 EOF
-        chmod +x /etc/init.d/$SERVICE_NAME && rc-update add $SERVICE_NAME default && rc-service $SERVICE_NAME start
+        chmod +x /etc/init.d/$SERVICE_NAME && rc-update add $SERVICE_NAME default && rc-service $SERVICE_NAME restart
     fi
-    echo "安装完成。"
+    echo "安装/更新完成。"
 }
 
 echo "1) 安装/更新 | 2) 卸载"; read -p "选择: " CHOICE
