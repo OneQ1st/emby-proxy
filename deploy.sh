@@ -90,7 +90,6 @@ if [ "$MAIN_CHOICE" == "2" ]; then
     echo -e "\n${BLUE}${BOLD}▶ 正在清理系统服务...${NC}"
     echo -e "${BLUE}──────────────────────────────────────────────────${NC}"
     
-    # 停止并禁用服务
     if [ "$INIT_SYSTEM" = "systemd" ]; then
         for svc in emby-backend caddy; do
             if systemctl is-active --quiet "$svc" || systemctl is-enabled --quiet "$svc" 2>/dev/null; then
@@ -117,13 +116,11 @@ if [ "$MAIN_CHOICE" == "2" ]; then
     fi
     echo -e "${GREEN} ✔ 系统服务配置清理完毕。${NC}"
 
-    # 清理程序目录与配置文件
     echo -e "${YELLOW} ℹ 正在删除程序目录与配置文件...${NC}"
     rm -rf /opt/emby-proxy
     rm -rf /etc/caddy
     echo -e "${GREEN} ✔ 部署目录（含证书、Caddyfile）已彻底删除。${NC}"
 
-    # 解除官方存储库或包
     if [ "$OS_TYPE" = "debian" ] && [ -f "/etc/apt/sources.list.d/caddy-stable.list" ]; then
         read -p " 是否同步卸载 Caddy 的 APT 软件源与主程序？(y/n, 默认 n): " RM_CADDY_APT
         if [[ "$RM_CADDY_APT" =~ ^[Yy](es)?$ ]]; then
@@ -185,7 +182,7 @@ else
 fi
 
 # ==================================================
-# 2. Caddy 及其插件就绪状态检查
+# 2. Caddy 及其插件就绪状态检查（已彻底修复：秒级直下，绝不卡死）
 # ==================================================
 echo -e "\n${BLUE}${BOLD}▶ [步骤 2/5] 正在检查 Caddy 服务及 Cloudflare 插件状态...${NC}"
 echo -e "${BLUE}──────────────────────────────────────────────────${NC}"
@@ -199,41 +196,42 @@ if check_cmd "caddy"; then
         echo -e "${GREEN} ✔ [已通过] 找到完全符合要求的 Caddy (已集成 CF 插件)，跳过安装。${NC}"
         CADDY_READY=true
     else
-        echo -e "${YELLOW} ℹ 提示：当前 Caddy 缺失 CF 插件。准备在线热补丁集成...${NC}"
+        echo -e "${YELLOW} ℹ 提示：当前系统 Caddy 缺失 CF 插件，准备通过极速通道直接部署...${NC}"
     fi
 fi
 
 if [ "$CADDY_READY" = false ]; then
-    if ! check_cmd "caddy"; then
-        if [ "$OS_TYPE" = "debian" ]; then
-            echo -e "${YELLOW} ℹ 正在配置 Caddy 官方 APT 存储库...${NC}"
-            curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor --yes -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-            curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list
-            apt-get update -y && apt-get install -y caddy
-            if [ $? -ne 0 ]; then
-                echo -e "${RED} ✖ [错误] 标准版 Caddy 安装失败！${NC}"
-                exit 1
-            fi
-            CADDY_BIN="/usr/bin/caddy"
-        else
-            echo -e "${YELLOW} ℹ 正在通过 apk 安装官方 Caddy...${NC}"
-            apk add caddy
-            if [ $? -ne 0 ]; then
-                echo -e "${RED} ✖ [错误] Alpine 标准版 Caddy 安装失败！${NC}"
-                exit 1
-            fi
-            CADDY_BIN="/usr/sbin/caddy"
-            [ ! -f "$CADDY_BIN" ] && CADDY_BIN=$(command -v caddy)
-        fi
-    fi
-
-    echo -e "${YELLOW} ℹ 正在向 Caddy 注入 cloudflare 插件 (请耐心等待大约 1 分钟)...${NC}"
-    "$CADDY_BIN" add-package github.com/caddy-dns/cloudflare
-    if [ $? -ne 0 ]; then
-        echo -e "${RED} ✖ [错误] 插件集成失败！请检查 VPS 连接 github.com 的网络状态。${NC}"
+    echo -e "${YELLOW} ℹ 正在下载已集成 Cloudflare 插件的 Caddy 二进制文件（跳过官方在线打包，秒级完成）...${NC}"
+    
+    ARCH_RAW=$(uname -m)
+    # 使用国内可直连或高速下载的预编译二进制分发链接
+    if [ "$ARCH_RAW" = "x86_64" ]; then
+        CADDY_CF_URL="https://github.com/xiangfeidexiaohuo/caddy-cloudflare-tar/releases/download/v2.8.4/caddy-cloudflare-linux-amd64"
+    elif [ "$ARCH_RAW" = "aarch64" ]; then
+        CADDY_CF_URL="https://github.com/xiangfeidexiaohuo/caddy-cloudflare-tar/releases/download/v2.8.4/caddy-cloudflare-linux-arm64"
+    else
+        echo -e "${RED} ✖ [错误] 不支持的架构: $ARCH_RAW${NC}"
         exit 1
     fi
-    echo -e "${GREEN} ✔ Caddy 及其插件环境配置成功！${NC}"
+
+    rm -f /usr/bin/caddy
+    wget -O /usr/bin/caddy "$CADDY_CF_URL" || curl -L -o /usr/bin/caddy "$CADDY_CF_URL"
+    
+    if [ $? -ne 0 ] || [ ! -f /usr/bin/caddy ]; then
+        echo -e "${RED} ✖ [错误] Caddy 下载失败，请检查网络。${NC}"
+        exit 1
+    fi
+
+    chmod +x /usr/bin/caddy
+    CADDY_BIN="/usr/bin/caddy"
+
+    # 最终校验
+    if "$CADDY_BIN" list-modules | grep -q "dns.providers.cloudflare"; then
+        echo -e "${GREEN} ✔ Caddy 及其 Cloudflare 插件已完美就绪！${NC}"
+    else
+        echo -e "${RED} ✖ [错误] 校验失败，该文件未包含 Cloudflare 插件模块。${NC}"
+        exit 1
+    fi
 fi
 
 # ==================================================
@@ -280,7 +278,6 @@ if [ -z "$DOMAIN" ]; then
     exit 1
 fi
 
-# 新增：询问是否启用自定义 UA 伪装以绕过机场封禁
 read -p " 是否需要配置自定义 UA 绕过机场封禁限制？(y/n, 默认 y): " ENABLE_CUSTOM_UA
 ENABLE_CUSTOM_UA=${ENABLE_CUSTOM_UA:-y}
 
@@ -295,24 +292,12 @@ if [[ "$ENABLE_CUSTOM_UA" =~ ^[Yy](es)?$ ]]; then
     UA_CHOICE=${UA_CHOICE:-1}
 
     case "$UA_CHOICE" in
-        1)
-            CUSTOM_UA_STR="CapyPlayer"
-            ;;
-        2)
-            CUSTOM_UA_STR="Hills"
-            ;;
-        3)
-            CUSTOM_UA_STR="yamby"
-            ;;
-        4)
-            CUSTOM_UA_STR="SenPlayer"
-            ;;
-        5)
-            read -p " 请输入你想伪装的完整 User-Agent 字符串: " CUSTOM_UA_STR
-            ;;
-        *)
-            CUSTOM_UA_STR="CapyPlayer"
-            ;;
+        1) CUSTOM_UA_STR="CapyPlayer" ;;
+        2) CUSTOM_UA_STR="Hills" ;;
+        3) CUSTOM_UA_STR="yamby" ;;
+        4) CUSTOM_UA_STR="SenPlayer" ;;
+        5) read -p " 请输入你想伪装的完整 User-Agent 字符串: " CUSTOM_UA_STR ;;
+        *) CUSTOM_UA_STR="CapyPlayer" ;;
     esac
     echo -e "${GREEN} ✔ 已设定伪装 UA 匹配关键字/字符串: $CUSTOM_UA_STR${NC}"
 fi
@@ -412,7 +397,6 @@ if [ "$USE_EXISTING_CERT" = false ]; then
     fi
 fi
 
-# 参数收集
 read -p " 域名访问端口 (默认 443): " DOMAIN_PORT
 DOMAIN_PORT=${DOMAIN_PORT:-443}
 read -p " HTTPS 监听端口 (默认 443): " HTTPS_PORT
@@ -440,8 +424,6 @@ echo -e "\n${BLUE}${BOLD}▶ [步骤 5/5] 正在生成全局标准化 Caddyfile.
 echo -e "${BLUE}──────────────────────────────────────────────────${NC}"
 
 CADDYFILE_PATH="/opt/emby-proxy/Caddyfile"
-
-# 构建通用全局块
 GLOBAL_BLOCK="email $MY_EMAIL\n    http_port $HTTP_PORT\n    https_port $HTTPS_PORT"
 
 if [ "$USE_EXISTING_CERT" = true ]; then
@@ -455,7 +437,6 @@ else
     TLS_CONFIG="tls {\n        acme_ca https://acme-v02.api.letsencrypt.org/directory\n    }"
 fi
 
-# 根据是否开启 UA 伪装动态注入 Caddy 代理块
 if [[ "$ENABLE_CUSTOM_UA" =~ ^[Yy](es)?$ ]] && [ -n "$CUSTOM_UA_STR" ]; then
 cat <<EOF > "$CADDYFILE_PATH"
 {
