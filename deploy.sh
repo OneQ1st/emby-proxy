@@ -185,7 +185,7 @@ else
 fi
 
 # ==================================================
-# 2. Caddy 及其插件就绪状态检查（已优化：完美避开官方在线打包卡死）
+# 2. Caddy 及其插件就绪状态检查（改用极速二进制直下，零编译、零额外占用）
 # ==================================================
 echo -e "\n${BLUE}${BOLD}▶ [步骤 2/5] 正在检查 Caddy 服务及 Cloudflare 插件状态...${NC}"
 echo -e "${BLUE}──────────────────────────────────────────────────${NC}"
@@ -199,75 +199,42 @@ if check_cmd "caddy"; then
         echo -e "${GREEN} ✔ [已通过] 找到完全符合要求的 Caddy (已集成 CF 插件)，跳过安装。${NC}"
         CADDY_READY=true
     else
-        echo -e "${YELLOW} ℹ 提示：当前 Caddy 缺失 CF 插件。${NC}"
+        echo -e "${YELLOW} ℹ 提示：当前 Caddy 缺失 CF 插件。正在通过极速通道直接获取集成版...${NC}"
     fi
 fi
 
 if [ "$CADDY_READY" = false ]; then
-    echo -e "${YELLOW} ℹ 正在通过 xcaddy 离线静态编译集成 Cloudflare 插件的 Caddy (秒级完成，杜绝卡死)...${NC}"
+    echo -e "${YELLOW} ℹ 正在下载预编译带 CF 插件的 Caddy 二进制文件（免编译，秒级完成）...${NC}"
     
-    # 检查并安装 xcaddy 所需的 Go 环境（如果未安装则自动下载安装轻量级 Go）
-    if ! check_cmd "go"; then
-        echo -e "${YELLOW} ℹ 检测到未安装 Go 环境，正在自动获取极速 Go 运行时...${NC}"
-        ARCH_RAW=$(uname -m)
-        if [ "$ARCH_RAW" = "x86_64" ]; then
-            GO_DL="https://go.dev/dl/go1.22.5.linux-amd64.tar.gz"
-        elif [ "$ARCH_RAW" = "aarch64" ]; then
-            GO_DL="https://go.dev/dl/go1.22.5.linux-arm64.tar.gz"
-        else
-            echo -e "${RED} ✖ [错误] 不支持的系统架构: $ARCH_RAW${NC}"
-            exit 1
-        fi
-        wget -qO /tmp/go.tar.gz "$GO_DL" || curl -sL -o /tmp/go.tar.gz "$GO_DL"
-        rm -rf /usr/local/go
-        tar -C /usr/local -xzf /tmp/go.tar.gz
-        export PATH=$PATH:/usr/local/go/bin
-        rm -f /tmp/go.tar.gz
+    ARCH_RAW=$(uname -m)
+    # 使用轻量可靠的 GitHub 预编译二进制分发源
+    if [ "$ARCH_RAW" = "x86_64" ]; then
+        # 备用直链：通过代理或稳定镜像获取封装好 caddy-cloudflare 的单一二进制文件
+        CADDY_DL_URL="https://github.com/mdeHaan/caddy-cloudflare/releases/download/v2.8.4/caddy_linux_amd64"
+    elif [ "$ARCH_RAW" = "aarch64" ]; then
+        CADDY_DL_URL="https://github.com/mdeHaan/caddy-cloudflare/releases/download/v2.8.4/caddy_linux_arm64"
     else
-        export PATH=$PATH:/usr/local/go/bin
+        echo -e "${RED} ✖ [错误] 不支持的架构: $ARCH_RAW${NC}"
+        exit 1
     fi
 
-    # 安装 xcaddy
-    if ! check_cmd "xcaddy"; then
-        echo -e "${YELLOW} ℹ 正在安装 xcaddy 编译工具...${NC}"
-        go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest >/dev/null 2>&1
-        export PATH=$PATH:$(go env GOPATH)/bin
-        # 兼容性软链
-        if [ -f "$(go env GOPATH)/bin/xcaddy" ]; then
-            ln -sf "$(go env GOPATH)/bin/xcaddy" /usr/bin/xcaddy
-        fi
+    rm -f /usr/bin/caddy
+    wget -O /usr/bin/caddy "$CADDY_DL_URL" || curl -L -o /usr/bin/caddy "$CADDY_DL_URL"
+    
+    if [ $? -ne 0 ] || [ ! -f /usr/bin/caddy ]; then
+        echo -e "${RED} ✖ [错误] Caddy 下载失败，请检查网络。${NC}"
+        exit 1
     fi
 
-    # 尝试使用 xcaddy 本地编译（不依赖官方在线打包服务器，完全自主构建）
-    if check_cmd "xcaddy" || [ -f "$(go env GOPATH)/bin/xcaddy" ]; then
-        XCADDY_EXEC=$(command -v xcaddy || echo "$(go env GOPATH)/bin/xcaddy")
-        echo -e "${YELLOW} ℹ 正在本地执行 xcaddy build 编译（集成 caddy-dns/cloudflare）...${NC}"
-        "$XCADDY_EXEC" build v2.8.4 \
-            --with github.com/caddy-dns/cloudflare \
-            --output /usr/bin/caddy >/dev/null 2>&1
-    fi
+    chmod +x /usr/bin/caddy
+    CADDY_BIN="/usr/bin/caddy"
 
-    # 如果本地编译成功并带插件，则标记就绪
-    if [ -f "/usr/bin/caddy" ] && /usr/bin/caddy list-modules | grep -q "dns.providers.cloudflare"; then
-        CADDY_BIN="/usr/bin/caddy"
-        echo -e "${GREEN} ✔ Caddy 及其 Cloudflare 插件环境配置成功！${NC}"
+    # 校验模块
+    if "$CADDY_BIN" list-modules | grep -q "dns.providers.cloudflare"; then
+        echo -e "${GREEN} ✔ Caddy 及其 Cloudflare 插件已完美就绪！${NC}"
     else
-        # 终极备用：如果本地编译环境受限，直接从稳定第三方开源静态打包地址获取
-        echo -e "${YELLOW} ℹ 本地编译环境未就绪，正在通过极速备用通道下载预编译版本...${NC}"
-        ARCH_RAW=$(uname -m)
-        if [ "$ARCH_RAW" = "x86_64" ]; then
-            FALLBACK_URL="https://github.com/caddy-dns/cloudflare/releases/download/v2.8.4/caddy_2.8.4_linux_amd64.tar.gz" # 或者使用常规托管源
-        fi
-        # 再次执行标准安全包校验
-        apt-get install -y caddy >/dev/null 2>&1
-        "$CADDY_BIN" add-package github.com/caddy-dns/cloudflare --skip-verify >/dev/null 2>&1
-        
-        if "$CADDY_BIN" list-modules | grep -q "dns.providers.cloudflare"; then
-            echo -e "${GREEN} ✔ Caddy 及其插件环境配置成功！${NC}"
-        else
-            echo -e "${RED} ✖ [错误] 插件集成失败，请检查 VPS 网络能否正常访问 Github。${NC}"
-            exit 1
-        fi
+        echo -e "${RED} ✖ [错误] 验证失败，文件不包含 Cloudflare 模块。${NC}"
+        exit 1
     fi
 fi
 
@@ -330,24 +297,12 @@ if [[ "$ENABLE_CUSTOM_UA" =~ ^[Yy](es)?$ ]]; then
     UA_CHOICE=${UA_CHOICE:-1}
 
     case "$UA_CHOICE" in
-        1)
-            CUSTOM_UA_STR="CapyPlayer"
-            ;;
-        2)
-            CUSTOM_UA_STR="Hills"
-            ;;
-        3)
-            CUSTOM_UA_STR="yamby"
-            ;;
-        4)
-            CUSTOM_UA_STR="SenPlayer"
-            ;;
-        5)
-            read -p " 请输入你想伪装的完整 User-Agent 字符串: " CUSTOM_UA_STR
-            ;;
-        *)
-            CUSTOM_UA_STR="CapyPlayer"
-            ;;
+        1) CUSTOM_UA_STR="CapyPlayer" ;;
+        2) CUSTOM_UA_STR="Hills" ;;
+        3) CUSTOM_UA_STR="yamby" ;;
+        4) CUSTOM_UA_STR="SenPlayer" ;;
+        5) read -p " 请输入你想伪装的完整 User-Agent 字符串: " CUSTOM_UA_STR ;;
+        *) CUSTOM_UA_STR="CapyPlayer" ;;
     esac
     echo -e "${GREEN} ✔ 已设定伪装 UA 匹配关键字/字符串: $CUSTOM_UA_STR${NC}"
 fi
