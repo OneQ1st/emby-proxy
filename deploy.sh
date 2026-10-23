@@ -185,7 +185,7 @@ else
 fi
 
 # ==================================================
-# 2. Caddy 及其插件就绪状态检查（改用极速二进制直下，零编译、零额外占用）
+# 2. Caddy 及其插件就绪状态检查
 # ==================================================
 echo -e "\n${BLUE}${BOLD}▶ [步骤 2/5] 正在检查 Caddy 服务及 Cloudflare 插件状态...${NC}"
 echo -e "${BLUE}──────────────────────────────────────────────────${NC}"
@@ -199,43 +199,41 @@ if check_cmd "caddy"; then
         echo -e "${GREEN} ✔ [已通过] 找到完全符合要求的 Caddy (已集成 CF 插件)，跳过安装。${NC}"
         CADDY_READY=true
     else
-        echo -e "${YELLOW} ℹ 提示：当前 Caddy 缺失 CF 插件。正在通过极速通道直接获取集成版...${NC}"
+        echo -e "${YELLOW} ℹ 提示：当前 Caddy 缺失 CF 插件。准备在线热补丁集成...${NC}"
     fi
 fi
 
 if [ "$CADDY_READY" = false ]; then
-    echo -e "${YELLOW} ℹ 正在下载预编译带 CF 插件的 Caddy 二进制文件（免编译，秒级完成）...${NC}"
-    
-    ARCH_RAW=$(uname -m)
-    # 使用轻量可靠的 GitHub 预编译二进制分发源
-    if [ "$ARCH_RAW" = "x86_64" ]; then
-        # 备用直链：通过代理或稳定镜像获取封装好 caddy-cloudflare 的单一二进制文件
-        CADDY_DL_URL="https://github.com/mdeHaan/caddy-cloudflare/releases/download/v2.8.4/caddy_linux_amd64"
-    elif [ "$ARCH_RAW" = "aarch64" ]; then
-        CADDY_DL_URL="https://github.com/mdeHaan/caddy-cloudflare/releases/download/v2.8.4/caddy_linux_arm64"
-    else
-        echo -e "${RED} ✖ [错误] 不支持的架构: $ARCH_RAW${NC}"
-        exit 1
+    if ! check_cmd "caddy"; then
+        if [ "$OS_TYPE" = "debian" ]; then
+            echo -e "${YELLOW} ℹ 正在配置 Caddy 官方 APT 存储库...${NC}"
+            curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor --yes -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+            curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list
+            apt-get update -y && apt-get install -y caddy
+            if [ $? -ne 0 ]; then
+                echo -e "${RED} ✖ [错误] 标准版 Caddy 安装失败！${NC}"
+                exit 1
+            fi
+            CADDY_BIN="/usr/bin/caddy"
+        else
+            echo -e "${YELLOW} ℹ 正在通过 apk 安装官方 Caddy...${NC}"
+            apk add caddy
+            if [ $? -ne 0 ]; then
+                echo -e "${RED} ✖ [错误] Alpine 标准版 Caddy 安装失败！${NC}"
+                exit 1
+            fi
+            CADDY_BIN="/usr/sbin/caddy"
+            [ ! -f "$CADDY_BIN" ] && CADDY_BIN=$(command -v caddy)
+        fi
     fi
 
-    rm -f /usr/bin/caddy
-    wget -O /usr/bin/caddy "$CADDY_DL_URL" || curl -L -o /usr/bin/caddy "$CADDY_DL_URL"
-    
-    if [ $? -ne 0 ] || [ ! -f /usr/bin/caddy ]; then
-        echo -e "${RED} ✖ [错误] Caddy 下载失败，请检查网络。${NC}"
+    echo -e "${YELLOW} ℹ 正在向 Caddy 注入 cloudflare 插件 (请耐心等待大约 1 分钟)...${NC}"
+    "$CADDY_BIN" add-package github.com/caddy-dns/cloudflare
+    if [ $? -ne 0 ]; then
+        echo -e "${RED} ✖ [错误] 插件集成失败！请检查 VPS 连接 github.com 的网络状态。${NC}"
         exit 1
     fi
-
-    chmod +x /usr/bin/caddy
-    CADDY_BIN="/usr/bin/caddy"
-
-    # 校验模块
-    if "$CADDY_BIN" list-modules | grep -q "dns.providers.cloudflare"; then
-        echo -e "${GREEN} ✔ Caddy 及其 Cloudflare 插件已完美就绪！${NC}"
-    else
-        echo -e "${RED} ✖ [错误] 验证失败，文件不包含 Cloudflare 模块。${NC}"
-        exit 1
-    fi
+    echo -e "${GREEN} ✔ Caddy 及其插件环境配置成功！${NC}"
 fi
 
 # ==================================================
@@ -297,12 +295,24 @@ if [[ "$ENABLE_CUSTOM_UA" =~ ^[Yy](es)?$ ]]; then
     UA_CHOICE=${UA_CHOICE:-1}
 
     case "$UA_CHOICE" in
-        1) CUSTOM_UA_STR="CapyPlayer" ;;
-        2) CUSTOM_UA_STR="Hills" ;;
-        3) CUSTOM_UA_STR="yamby" ;;
-        4) CUSTOM_UA_STR="SenPlayer" ;;
-        5) read -p " 请输入你想伪装的完整 User-Agent 字符串: " CUSTOM_UA_STR ;;
-        *) CUSTOM_UA_STR="CapyPlayer" ;;
+        1)
+            CUSTOM_UA_STR="CapyPlayer"
+            ;;
+        2)
+            CUSTOM_UA_STR="Hills"
+            ;;
+        3)
+            CUSTOM_UA_STR="yamby"
+            ;;
+        4)
+            CUSTOM_UA_STR="SenPlayer"
+            ;;
+        5)
+            read -p " 请输入你想伪装的完整 User-Agent 字符串: " CUSTOM_UA_STR
+            ;;
+        *)
+            CUSTOM_UA_STR="CapyPlayer"
+            ;;
     esac
     echo -e "${GREEN} ✔ 已设定伪装 UA 匹配关键字/字符串: $CUSTOM_UA_STR${NC}"
 fi
