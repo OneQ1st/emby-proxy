@@ -280,6 +280,43 @@ if [ -z "$DOMAIN" ]; then
     exit 1
 fi
 
+# 新增：询问是否启用自定义 UA 伪装以绕过机场封禁
+read -p " 是否需要配置自定义 UA 绕过机场封禁限制？(y/n, 默认 y): " ENABLE_CUSTOM_UA
+ENABLE_CUSTOM_UA=${ENABLE_CUSTOM_UA:-y}
+
+if [[ "$ENABLE_CUSTOM_UA" =~ ^[Yy](es)?$ ]]; then
+    echo -e "\n${YELLOW} 请选择要伪装的目标客户端 UA 类型:${NC}"
+    echo -e "  ${BOLD}1)${NC} CapyPlayer"
+    echo -e "  ${BOLD}2)${NC} Hills"
+    echo -e "  ${BOLD}3)${NC} yamby"
+    echo -e "  ${BOLD}4)${NC} SenPlayer"
+    echo -e "  ${BOLD}5)${NC} 自定义输入其他 UA 字符串"
+    read -p " 请选择 [1/2/3/4/5, 默认 1]: " UA_CHOICE
+    UA_CHOICE=${UA_CHOICE:-1}
+
+    case "$UA_CHOICE" in
+        1)
+            CUSTOM_UA_STR="CapyPlayer"
+            ;;
+        2)
+            CUSTOM_UA_STR="Hills"
+            ;;
+        3)
+            CUSTOM_UA_STR="yamby"
+            ;;
+        4)
+            CUSTOM_UA_STR="SenPlayer"
+            ;;
+        5)
+            read -p " 请输入你想伪装的完整 User-Agent 字符串: " CUSTOM_UA_STR
+            ;;
+        *)
+            CUSTOM_UA_STR="CapyPlayer"
+            ;;
+    esac
+    echo -e "${GREEN} ✔ 已设定伪装 UA 匹配关键字/字符串: $CUSTOM_UA_STR${NC}"
+fi
+
 CERT_FILE="/opt/emby-proxy/ssl/fullchain.pem"
 KEY_FILE="/opt/emby-proxy/ssl/privkey.pem"
 USE_EXISTING_CERT=false
@@ -418,6 +455,45 @@ else
     TLS_CONFIG="tls {\n        acme_ca https://acme-v02.api.letsencrypt.org/directory\n    }"
 fi
 
+# 根据是否开启 UA 伪装动态注入 Caddy 代理块
+if [[ "$ENABLE_CUSTOM_UA" =~ ^[Yy](es)?$ ]] && [ -n "$CUSTOM_UA_STR" ]; then
+cat <<EOF > "$CADDYFILE_PATH"
+{
+    $(echo -e "$GLOBAL_BLOCK")
+}
+
+$DOMAIN:$DOMAIN_PORT {
+    $(echo -e "$TLS_CONFIG")
+
+    handle_path /emos* {
+        rewrite * /https/video.emos.best/443{path}
+        
+        reverse_proxy 127.0.0.1:8080 {
+            header_up EMOS-PROXY-ID "eD3VXZD9Ys"
+            header_up EMOS-PROXY-NAME "@OneQ1st"
+            header_up X-Forwarded-For {remote_host}
+            header_up Host {host}
+            header_up X-Real-IP {remote_host}
+            header_up User-Agent "$CUSTOM_UA_STR" {
+                match header User-Agent *CapyPlayer* *Hills* *yamby* *SenPlayer*
+            }
+            flush_interval -1
+        }
+    }
+
+    handle {
+        reverse_proxy 127.0.0.1:8080 {
+            header_up Host {host}
+            header_up X-Real-IP {remote_host}
+            header_up User-Agent "$CUSTOM_UA_STR" {
+                match header User-Agent *CapyPlayer* *Hills* *yamby* *SenPlayer*
+            }
+            flush_interval -1
+        }
+    }
+}
+EOF
+else
 cat <<EOF > "$CADDYFILE_PATH"
 {
     $(echo -e "$GLOBAL_BLOCK")
@@ -448,6 +524,7 @@ $DOMAIN:$DOMAIN_PORT {
     }
 }
 EOF
+fi
 
 # ==================================================
 # 6. 服务配置与重启 (Systemd / OpenRC)
