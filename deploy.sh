@@ -13,7 +13,7 @@ NC='\e[0m'
 
 clear
 echo -e "${BLUE}${BOLD}┌──────────────────────────────────────────────────┐${NC}"
-echo -e "${BLUE}${BOLD}│    Emby-Proxy 双栈(IPv4/IPv6)智能全自检部署脚本    │${NC}"
+echo -e "${BLUE}${BOLD}│       Emby-Proxy 后端智能全自检部署脚本          │${NC}"
 echo -e "${BLUE}${BOLD}└──────────────────────────────────────────────────┘${NC}"
 
 # ==================================================
@@ -135,7 +135,7 @@ mkdir -p /opt/emby-proxy
 # ==================================================
 # 1. 执行独立的依赖检查与安装块
 # ==================================================
-echo -e "\n${BLUE}${BOLD}▶ [步骤 1/3] 正在检查系统基础依赖环境...${NC}"
+echo -e "\n${BLUE}${BOLD}▶ [步骤 1/2] 正在检查系统基础依赖环境...${NC}"
 echo -e "${BLUE}──────────────────────────────────────────────────${NC}"
 
 NEED_INSTALL=false
@@ -160,7 +160,7 @@ fi
 # ==================================================
 # 2. 后端 Emby-Proxy 状态检查与下载
 # ==================================================
-echo -e "\n${BLUE}${BOLD}▶ [步骤 2/3] 正在检查与配置 Emby-Proxy 后端程序...${NC}"
+echo -e "\n${BLUE}${BOLD}▶ [步骤 2/2] 正在检查与配置 Emby-Proxy 后端程序...${NC}"
 echo -e "${BLUE}──────────────────────────────────────────────────${NC}"
 ARCH=$(uname -m)
 PROXY_EXEC="/opt/emby-proxy/emby-proxy"
@@ -195,18 +195,7 @@ if [[ "$REDOWNLOAD" =~ ^[Yy](es)?$ ]]; then
 fi
 
 # ==================================================
-# 3. 自定义监听端口交互配置 (双栈适配)
-# ==================================================
-echo -e "\n${BLUE}${BOLD}▶ [步骤 3/3] 配置服务监听端口 (IPv4 & IPv6 双栈)${NC}"
-echo -e "${BLUE}──────────────────────────────────────────────────${NC}"
-read -p " 请输入服务监听端口 [直接回车默认 7080]: " INPUT_PORT
-if [ -z "$INPUT_PORT" ]; then
-    INPUT_PORT="7080"
-fi
-echo -e "${GREEN} ✔ 已设定监听端口为: ${BOLD}$INPUT_PORT${NC}"
-
-# ==================================================
-# 4. 服务配置与重启 (Systemd / OpenRC) - 双栈绑定
+# 3. 服务配置与重启 (Systemd / OpenRC)
 # ==================================================
 if [ "$INIT_SYSTEM" = "systemd" ]; then
     cat <<EOF > /etc/systemd/system/emby-backend.service
@@ -216,9 +205,6 @@ After=network.target
 
 [Service]
 WorkingDirectory=/opt/emby-proxy
-Environment="LISTEN_ADDR=:$INPUT_PORT"
-# 针对部分 Go 程序需要显式开启 IPv6 双栈支持，可确保内核不单绑 IPv4
-Environment="GODEBUG=netdns=go"
 ExecStart=$PROXY_EXEC
 Restart=always
 RestartSec=5
@@ -238,9 +224,6 @@ description="Emby Proxy Backend"
 supervisor="supervise-daemon"
 command="$PROXY_EXEC"
 directory="/opt/emby-proxy"
-command_args=""
-export LISTEN_ADDR=":$INPUT_PORT"
-export GODEBUG="netdns=go"
 respawn_delay=5
 respawn_max=0
 
@@ -258,16 +241,15 @@ fi
 sleep 2
 
 # ==================================================
-# 5. 看板信息输出
+# 4. 看板信息输出
 # ==================================================
 echo -e "\n${GREEN}${BOLD}┌────────────────────────────────────────────────────────┐${NC}"
-echo -e "${GREEN}${BOLD}│ 🎉 部署完毕！双栈监听服务及环境变量已构建完成。        │${NC}"
+echo -e "${GREEN}${BOLD}│ 🎉 部署完毕！Emby-Proxy 二进制及自启动服务已构建完成。 │${NC}"
 echo -e "${GREEN}${BOLD}└────────────────────────────────────────────────────────┘${NC}"
 
 echo -e " ${BOLD}📊 [配置服务运行看板]${NC}"
 echo -e " ────────────────────────────────────────────────────────"
 echo -e "  📂 程序安装路径:  ${BLUE}/opt/emby-proxy/emby-proxy${NC}"
-echo -e "  🌐 监听端口(双栈): ${BLUE}:$INPUT_PORT (IPv4 & IPv6)${NC}"
 
 STATUS_BACKEND=false
 
