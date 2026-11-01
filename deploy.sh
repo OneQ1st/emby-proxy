@@ -195,7 +195,18 @@ if [[ "$REDOWNLOAD" =~ ^[Yy](es)?$ ]]; then
 fi
 
 # ==================================================
-# 3. 服务配置与重启 (Systemd / OpenRC)
+# 3. 自定义监听端口交互配置
+# ==================================================
+echo -e "\n${BLUE}${BOLD}▶ [步骤 3/3] 配置服务监听端口${NC}"
+echo -e "${BLUE}──────────────────────────────────────────────────${NC}"
+read -p " 请输入服务监听端口 [直接回车默认 8080]: " INPUT_PORT
+if [ -z "$INPUT_PORT" ]; then
+    INPUT_PORT="8080"
+fi
+echo -e "${GREEN} ✔ 已设定监听端口为: ${BOLD}$INPUT_PORT${NC}"
+
+# ==================================================
+# 4. 服务配置与重启 (Systemd / OpenRC)
 # ==================================================
 if [ "$INIT_SYSTEM" = "systemd" ]; then
     cat <<EOF > /etc/systemd/system/emby-backend.service
@@ -205,6 +216,7 @@ After=network.target
 
 [Service]
 WorkingDirectory=/opt/emby-proxy
+Environment="LISTEN_ADDR=:$INPUT_PORT"
 ExecStart=$PROXY_EXEC
 Restart=always
 RestartSec=5
@@ -224,6 +236,8 @@ description="Emby Proxy Backend"
 supervisor="supervise-daemon"
 command="$PROXY_EXEC"
 directory="/opt/emby-proxy"
+command_args=""
+export LISTEN_ADDR=":$INPUT_PORT"
 respawn_delay=5
 respawn_max=0
 
@@ -241,7 +255,7 @@ fi
 sleep 2
 
 # ==================================================
-# 4. 看板信息输出
+# 5. 看板信息输出
 # ==================================================
 echo -e "\n${GREEN}${BOLD}┌────────────────────────────────────────────────────────┐${NC}"
 echo -e "${GREEN}${BOLD}│ 🎉 部署完毕！Emby-Proxy 二进制及自启动服务已构建完成。 │${NC}"
@@ -250,6 +264,7 @@ echo -e "${GREEN}${BOLD}└─────────────────�
 echo -e " ${BOLD}📊 [配置服务运行看板]${NC}"
 echo -e " ────────────────────────────────────────────────────────"
 echo -e "  📂 程序安装路径:  ${BLUE}/opt/emby-proxy/emby-proxy${NC}"
+echo -e "  🌐 监听端口:      ${BLUE}$INPUT_PORT${NC}"
 
 STATUS_BACKEND=false
 
