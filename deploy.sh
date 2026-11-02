@@ -397,7 +397,7 @@ if [ "$USE_EXISTING_CERT" = false ]; then
 fi
 
 # ==================================================
-# 5. 动态生成 Caddyfile
+# 5. 动态生成 Caddyfile (已集成 Hills UA 识别与匹配)
 # ==================================================
 echo -e "\n${BLUE}${BOLD}▶ [步骤 5/5] 正在生成全局标准化 Caddyfile...${NC}"
 echo -e "${BLUE}──────────────────────────────────────────────────${NC}"
@@ -426,6 +426,11 @@ cat <<EOF > "$CADDYFILE_PATH"
 $DOMAIN:$DOMAIN_PORT {
     $(echo -e "$TLS_CONFIG")
 
+    # 针对 Hills 客户端的自定义 UA 匹配分流/标记（可根据需要调整或透传）
+    @hills {
+        header User-Agent *Hills*
+    }
+
     handle_path /emos* {
         rewrite * /https/video.emos.best/443{path}
         
@@ -435,6 +440,16 @@ $DOMAIN:$DOMAIN_PORT {
             header_up X-Forwarded-For {remote_host}
             header_up Host {host}
             header_up X-Real-IP {remote_host}
+            header_up X-Client-UA "Hills"
+            flush_interval -1
+        }
+    }
+
+    handle @hills {
+        reverse_proxy 127.0.0.1:8080 {
+            header_up Host {host}
+            header_up X-Real-IP {remote_host}
+            header_up X-Hills-Client "true"
             flush_interval -1
         }
     }
